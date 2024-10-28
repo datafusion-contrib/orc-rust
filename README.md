@@ -31,7 +31,6 @@ The long term vision for this crate is to be feature complete enough to be donat
 The following lists the rough roadmap for features to be implemented, from highest to lowest priority.
 
 - Performance enhancements
-- DataFusion integration
 - Predicate pushdown
 - Row indices
 - Bloom filters
@@ -54,7 +53,7 @@ Versions will be released on an ad-hoc basis (with no fixed schedule).
 The following table lists how ORC data types are read into Arrow data types:
 
 | ORC Data Type     | Arrow Data Type             | Notes |
-| ----------------- | --------------------------  | ----- |
+| ----------------- | --------------------------- | ----- |
 | Boolean           | Boolean                     |       |
 | TinyInt           | Int8                        |       |
 | SmallInt          | Int16                       |       |
