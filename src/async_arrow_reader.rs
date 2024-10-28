@@ -68,7 +68,7 @@ impl<R: Send> From<Cursor<R>> for StripeFactory<R> {
     }
 }
 
-struct StripeFactory<R> {
+pub struct StripeFactory<R> {
     inner: Cursor<R>,
     is_end: bool,
 }
@@ -130,6 +130,11 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
             schema_ref,
             state: StreamState::Init,
         }
+    }
+
+    /// Extracts the inner `StripeFactory` and `SchemaRef` from the `ArrowStreamReader`.
+    pub fn into_parts(self) -> (Option<Box<StripeFactory<R>>>, SchemaRef) {
+        (self.factory, self.schema_ref)
     }
 
     pub fn schema(&self) -> SchemaRef {
