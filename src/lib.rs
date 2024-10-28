@@ -46,7 +46,7 @@
 //! writer.close().unwrap();
 //! ```
 
-mod array_decoder;
+pub mod array_decoder;
 pub mod arrow_reader;
 pub mod arrow_writer;
 #[cfg(feature = "async")]
