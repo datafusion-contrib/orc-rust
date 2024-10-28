@@ -95,7 +95,8 @@ impl<R: AsyncChunkReader + 'static> StripeFactory<R> {
         .await
     }
 
-    async fn read_next_stripe(mut self) -> Result<(Self, Option<Stripe>)> {
+    /// Read the next stripe from the file.
+    pub async fn read_next_stripe(mut self) -> Result<(Self, Option<Stripe>)> {
         let info = self
             .inner
             .file_metadata

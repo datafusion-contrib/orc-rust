@@ -235,7 +235,8 @@ impl Stripe {
         self.number_of_rows
     }
 
-    pub(crate) fn stream_map(&self) -> &StreamMap {
+    /// Fetch the stream map
+    pub fn stream_map(&self) -> &StreamMap {
         &self.stream_map
     }
 
@@ -249,7 +250,7 @@ impl Stripe {
 }
 
 #[derive(Debug)]
-pub(crate) struct StreamMap {
+pub struct StreamMap {
     pub inner: HashMap<(u32, Kind), Bytes>,
     pub compression: Option<Compression>,
 }
