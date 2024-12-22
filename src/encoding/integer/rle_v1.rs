@@ -19,19 +19,29 @@
 
 use std::{io::Read, marker::PhantomData};
 
+use bytes::{BufMut, BytesMut};
 use snafu::OptionExt;
 
 use crate::{
     encoding::{
         rle::GenericRle,
         util::{read_u8, try_read_u8},
+        PrimitiveValueEncoder,
     },
     error::{OutOfSpecSnafu, Result},
+    memory::EstimateMemory,
 };
 
-use super::{util::read_varint_zigzagged, EncodingSign, NInt};
+use super::{
+    util::{read_varint_zigzagged, write_varint_zigzagged},
+    EncodingSign, NInt,
+};
 
-const MAX_RUN_LENGTH: usize = 130;
+const MIN_RUN_LENGTH: usize = 3;
+const MAX_RUN_LENGTH: usize = 3 + MIN_RUN_LENGTH;
+const MAX_LITERAL_LENGTH: usize = 128;
+const MAX_DELTA: i64 = 127;
+const MIN_DELTA: i64 = -128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum EncodingType {
@@ -56,6 +66,16 @@ impl EncodingType {
             None => None,
         };
         Ok(opt_encoding)
+    }
+
+    /// Encode header to write
+    fn to_header(&self, writer: &mut BytesMut) {
+        if let Self::Run { length, delta } = *self {
+            writer.put_u8(length as u8 - 3);
+            writer.put_u8(delta as u8);
+        } else if let Self::Literals { length } = *self {
+            writer.put_u8(-(length as i32) as u8);
+        }
     }
 }
 
@@ -144,6 +164,139 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
             }
             None => Ok(()),
         }
+    }
+}
+
+pub struct RleV1Encoder<N: NInt, S: EncodingSign> {
+    writer: BytesMut,
+    /// Literal values to encode.
+    literals: [N; MAX_LITERAL_LENGTH],
+    /// Represents the number of elements currently in `literals` if Literals,
+    /// otherwise represents the length of the Run.
+    num_literals: usize,
+    /// Tracks if current Literal sequence will turn into a Run sequence due to
+    /// repeated values at the end of the value sequence.
+    tail_run_length: usize,
+    /// If in Run sequence or not, and keeps the corresponding value.
+    run_value: Option<N>,
+    /// The delta value keeped now
+    run_delta: i64,
+    sign: PhantomData<S>,
+}
+
+impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
+    // Algorithm adapted from:
+    // https://github.com/apache/orc/blob/main/java/core/src/java/org/apache/orc/impl/RunLengthIntegerWriter.java
+    fn process_value(&mut self, value: N) {
+        if self.num_literals == 0 {
+            self.literals[0] = value;
+            self.num_literals = 1;
+            self.tail_run_length = 1;
+        } else if let Some(run_value) = self.run_value {
+            if value.as_i64() == run_value.as_i64() + self.run_delta * self.tail_run_length as i64 {
+                self.num_literals += 1;
+                if self.num_literals == MAX_RUN_LENGTH {
+                    self.flush();
+                }
+            } else {
+                self.flush();
+                self.literals[self.num_literals] = value;
+                self.num_literals += 1;
+                self.tail_run_length = 1;
+            }
+        } else {
+            if self.tail_run_length == 1 {
+                self.run_delta = (value - self.literals[self.num_literals - 1]).as_i64();
+                if self.run_delta < MIN_DELTA || self.run_delta > MAX_DELTA {
+                    self.tail_run_length = 1;
+                } else {
+                    self.tail_run_length = 2;
+                }
+            } else if value.as_i64()
+                == self.literals[self.num_literals - 1].as_i64() + self.run_delta
+            {
+                self.tail_run_length += 1;
+            } else {
+                self.run_delta = (value - self.literals[self.num_literals - 1]).as_i64();
+                if self.run_delta < MIN_DELTA || self.run_delta > MAX_DELTA {
+                    self.tail_run_length = 1;
+                } else {
+                    self.tail_run_length = 2;
+                }
+            }
+            if self.tail_run_length == MIN_RUN_LENGTH {
+                if self.num_literals + 1 == MIN_RUN_LENGTH {
+                    self.run_value = Some(self.literals[0]);
+                    self.num_literals += 1;
+                } else {
+                    self.num_literals -= MIN_RUN_LENGTH - 1;
+                    let run_value = self.literals[self.num_literals];
+                    self.flush();
+                    self.run_value = Some(run_value);
+                    self.num_literals = MIN_RUN_LENGTH;
+                }
+            } else {
+                self.literals[self.num_literals] = value;
+                self.num_literals += 1;
+                if (self.num_literals == MAX_LITERAL_LENGTH) {
+                    self.flush();
+                }
+            }
+        }
+    }
+
+    // Flush values to witer and reset state
+    fn flush(&mut self) {
+        if self.num_literals > 0 {
+            if let Some(run_value) = self.run_value {
+                let header = EncodingType::Run {
+                    length: self.tail_run_length,
+                    delta: self.run_delta as i8,
+                };
+                header.to_header(&mut self.writer);
+                write_varint_zigzagged::<_, S>(&mut self.writer, run_value);
+            } else {
+                let header = EncodingType::Literals {
+                    length: self.num_literals,
+                };
+                header.to_header(&mut self.writer);
+                for i in 0..self.num_literals {
+                    write_varint_zigzagged::<_, S>(&mut self.writer, self.literals[i]);
+                }
+            }
+        }
+        self.run_value = None;
+        self.num_literals = 0;
+        self.tail_run_length = 0;
+    }
+}
+
+impl<N: NInt, S: EncodingSign> EstimateMemory for RleV1Encoder<N, S> {
+    fn estimate_memory_size(&self) -> usize {
+        self.writer.len()
+    }
+}
+
+impl<N: NInt, S: EncodingSign> PrimitiveValueEncoder<N> for RleV1Encoder<N, S> {
+    fn new() -> Self {
+        Self {
+            writer: BytesMut::new(),
+            sign: Default::default(),
+            literals: [0; MAX_LITERAL_LENGTH],
+            num_literals: 0,
+            tail_run_length: 0,
+            run_value: None,
+            run_delta: 0,
+        }
+    }
+
+    fn write_one(&mut self, value: N) {
+        self.process_value(value);
+    }
+
+    fn take_inner(&mut self) -> bytes::Bytes {
+        self.flush();
+        std::mem::take(&mut self.writer).into()
     }
 }
 
