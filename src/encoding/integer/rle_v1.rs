@@ -38,7 +38,7 @@ use super::{
 };
 
 const MIN_RUN_LENGTH: usize = 3;
-const MAX_RUN_LENGTH: usize = 3 + MIN_RUN_LENGTH;
+const MAX_RUN_LENGTH: usize = 127 + MIN_RUN_LENGTH;
 const MAX_LITERAL_LENGTH: usize = 128;
 const MAX_DELTA: i64 = 127;
 const MIN_DELTA: i64 = -128;
@@ -74,7 +74,7 @@ impl EncodingType {
             writer.put_u8(length as u8 - 3);
             writer.put_u8(delta as u8);
         } else if let Self::Literals { length } = *self {
-            writer.put_u8(-(length as i32) as u8);
+            writer.put_u8(-(length as i8) as u8);
         }
     }
 }
@@ -193,7 +193,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
             self.num_literals = 1;
             self.tail_run_length = 1;
         } else if let Some(run_value) = self.run_value {
-            if value.as_i64() == run_value.as_i64() + self.run_delta * self.tail_run_length as i64 {
+            if value.as_i64() == run_value.as_i64() + self.run_delta * self.num_literals as i64 {
                 self.num_literals += 1;
                 if self.num_literals == MAX_RUN_LENGTH {
                     self.flush();
@@ -238,7 +238,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
             } else {
                 self.literals[self.num_literals] = value;
                 self.num_literals += 1;
-                if (self.num_literals == MAX_LITERAL_LENGTH) {
+                if self.num_literals == MAX_LITERAL_LENGTH {
                     self.flush();
                 }
             }
@@ -250,7 +250,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
         if self.num_literals > 0 {
             if let Some(run_value) = self.run_value {
                 let header = EncodingType::Run {
-                    length: self.tail_run_length,
+                    length: self.num_literals,
                     delta: self.run_delta as i8,
                 };
                 header.to_header(&mut self.writer);
@@ -282,7 +282,7 @@ impl<N: NInt, S: EncodingSign> PrimitiveValueEncoder<N> for RleV1Encoder<N, S> {
         Self {
             writer: BytesMut::new(),
             sign: Default::default(),
-            literals: [0; MAX_LITERAL_LENGTH],
+            literals: [N::default(); MAX_LITERAL_LENGTH],
             num_literals: 0,
             tail_run_length: 0,
             run_value: None,
@@ -308,32 +308,36 @@ mod tests {
 
     use super::*;
 
-    fn test_helper(data: &[u8], expected: &[i64]) {
-        let mut reader = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(data));
-        let mut actual = vec![0; expected.len()];
-        reader.decode(&mut actual).unwrap();
-        assert_eq!(actual, expected);
+    fn test_helper(original: &[i64], encoded: &[u8]) {
+        let mut encoder = RleV1Encoder::<i64, UnsignedEncoding>::new();
+        encoder.write_slice(original);
+        encoder.flush();
+        let actual_encoded = encoder.take_inner();
+        assert_eq!(actual_encoded, encoded);
+
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(encoded));
+        let mut actual_decoded = vec![0; original.len()];
+        decoder.decode(&mut actual_decoded).unwrap();
+        assert_eq!(actual_decoded, original);
     }
 
     #[test]
     fn test_run() -> Result<()> {
-        let data = [0x61, 0x00, 0x07];
-        let expected = [7; 100];
-        test_helper(&data, &expected);
+        let original = [7; 100];
+        let encoded = [0x61, 0x00, 0x07];
+        test_helper(&original, &encoded);
 
-        let data = [0x61, 0xff, 0x64];
-        let expected = (1..=100).rev().collect::<Vec<_>>();
-        test_helper(&data, &expected);
-
+        let original = (1..=100).rev().collect::<Vec<_>>();
+        let encoded = [0x61, 0xff, 0x64];
+        test_helper(&original, &encoded);
         Ok(())
     }
 
     #[test]
     fn test_literal() -> Result<()> {
-        let data = [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb];
-        let expected = vec![2, 3, 6, 7, 11];
-        test_helper(&data, &expected);
-
+        let original = vec![2, 3, 6, 7, 11];
+        let encoded = [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb];
+        test_helper(&original, &encoded);
         Ok(())
     }
 }

@@ -144,7 +144,15 @@ pub trait VarintSerde: PrimInt + CheckedShl + BitOrAssign + Signed {
 /// Helps generalise the decoder efforts to be specific to supported integers.
 /// (Instead of decoding to u64/i64 for all then downcasting).
 pub trait NInt:
-    VarintSerde + ShlAssign<usize> + fmt::Debug + fmt::Display + fmt::Binary + Send + Sync + 'static
+    VarintSerde
+    + ShlAssign<usize>
+    + fmt::Debug
+    + fmt::Display
+    + fmt::Binary
+    + Default
+    + Send
+    + Sync
+    + 'static
 {
     type Bytes: AsRef<[u8]> + AsMut<[u8]> + Default + Clone + Copy + fmt::Debug;
 
