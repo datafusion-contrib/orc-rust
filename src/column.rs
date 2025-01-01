@@ -17,13 +17,8 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
-use snafu::ResultExt;
-
 use crate::encoding::integer::RleVersion;
-use crate::error::{IoSnafu, Result};
 use crate::proto::{column_encoding::Kind as ProtoColumnKind, ColumnEncoding, StripeFooter};
-use crate::reader::ChunkReader;
 use crate::schema::DataType;
 
 #[derive(Clone, Debug)]
@@ -134,18 +129,5 @@ impl Column {
                     .collect()
             }
         }
-    }
-
-    pub fn read_stream<R: ChunkReader>(reader: &mut R, start: u64, length: u64) -> Result<Bytes> {
-        reader.get_bytes(start, length).context(IoSnafu)
-    }
-
-    #[cfg(feature = "async")]
-    pub async fn read_stream_async<R: crate::reader::AsyncChunkReader>(
-        reader: &mut R,
-        start: u64,
-        length: u64,
-    ) -> Result<Bytes> {
-        reader.get_bytes(start, length).await.context(IoSnafu)
     }
 }

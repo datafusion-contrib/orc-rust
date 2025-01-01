@@ -154,7 +154,7 @@ impl Stripe {
             let column_id = stream.column();
             if column_ids.contains(&column_id) {
                 let kind = stream.kind();
-                let data = Column::read_stream(reader, stream_offset, length)?;
+                let data = reader.get_bytes(stream_offset, length).context(IoSnafu)?;
                 stream_map.insert((column_id, kind), data);
             }
             stream_offset += length;
@@ -207,7 +207,10 @@ impl Stripe {
             let column_id = stream.column();
             if column_ids.contains(&column_id) {
                 let kind = stream.kind();
-                let data = Column::read_stream_async(reader, stream_offset, length).await?;
+                let data = reader
+                    .get_bytes(stream_offset, length)
+                    .await
+                    .context(IoSnafu)?;
                 stream_map.insert((column_id, kind), data);
             }
 
