@@ -28,7 +28,7 @@ use snafu::ResultExt;
 use crate::array_decoder::derive_present_vec;
 use crate::column::Column;
 use crate::compression::Decompressor;
-use crate::encoding::integer::get_unsigned_rle_reader;
+use crate::encoding::integer::get_unsigned_int_decoder;
 use crate::encoding::PrimitiveValueDecoder;
 use crate::error::{ArrowSnafu, IoSnafu, Result};
 use crate::proto::column_encoding::Kind as ColumnEncodingKind;
@@ -42,7 +42,7 @@ pub fn new_binary_decoder(column: &Column, stripe: &Stripe) -> Result<Box<dyn Ar
     let present = PresentDecoder::from_stripe(stripe, column);
 
     let lengths = stripe.stream_map().get(column, Kind::Length);
-    let lengths = get_unsigned_rle_reader(column, lengths);
+    let lengths = get_unsigned_int_decoder(lengths, column.rle_version());
 
     let bytes = Box::new(stripe.stream_map().get(column, Kind::Data));
     Ok(Box::new(BinaryArrayDecoder::new(bytes, lengths, present)))
@@ -53,7 +53,7 @@ pub fn new_string_decoder(column: &Column, stripe: &Stripe) -> Result<Box<dyn Ar
     let present = PresentDecoder::from_stripe(stripe, column);
 
     let lengths = stripe.stream_map().get(column, Kind::Length);
-    let lengths = get_unsigned_rle_reader(column, lengths);
+    let lengths = get_unsigned_int_decoder(lengths, column.rle_version());
 
     match kind {
         ColumnEncodingKind::Direct | ColumnEncodingKind::DirectV2 => {
@@ -72,7 +72,7 @@ pub fn new_string_decoder(column: &Column, stripe: &Stripe) -> Result<Box<dyn Ar
             let dictionary_strings = Arc::new(dictionary_strings);
 
             let indexes = stripe.stream_map().get(column, Kind::Data);
-            let indexes = get_unsigned_rle_reader(column, indexes);
+            let indexes = get_unsigned_int_decoder(indexes, column.rle_version());
             let indexes = Int64ArrayDecoder::new(indexes, present);
 
             Ok(Box::new(DictionaryStringArrayDecoder::new(
