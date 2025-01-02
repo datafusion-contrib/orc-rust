@@ -210,10 +210,9 @@ impl VarintSerde for i128 {
     }
 }
 
-// We only implement for i16, i32, i64 and u64.
+// We only implement for i16, i32 and i64.
 // ORC supports only signed Short, Integer and Long types for its integer types,
-// and i8 is encoded as bytes. u64 is used for other encodings such as Strings
-// (to encode length, etc.).
+// and i8 is encoded as bytes.
 
 impl NInt for i16 {
     type Bytes = [u8; 2];
