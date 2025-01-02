@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::sync::Arc;
 
@@ -41,6 +41,7 @@ use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit, Union
 #[derive(Debug, Clone)]
 pub struct RootDataType {
     children: Vec<NamedColumn>,
+    all_children: HashSet<usize>,
 }
 
 impl RootDataType {
@@ -52,6 +53,12 @@ impl RootDataType {
     /// Base columns of the file.
     pub fn children(&self) -> &[NamedColumn] {
         &self.children
+    }
+
+    /// If specified column index is one of the projected columns in this root data type,
+    /// considering transitive children of compound types.
+    pub fn contains_column_index(&self, index: usize) -> bool {
+        self.all_children.contains(&index)
     }
 
     /// Convert into an Arrow schema.
@@ -76,14 +83,22 @@ impl RootDataType {
             .filter(|col| mask.is_index_projected(col.data_type().column_index()))
             .map(|col| col.to_owned())
             .collect::<Vec<_>>();
-        Self { children }
+        let all_children = get_all_children_indices_set(&children);
+        Self {
+            children,
+            all_children,
+        }
     }
 
     /// Construct from protobuf types.
     pub(crate) fn from_proto(types: &[proto::Type]) -> Result<Self> {
         ensure!(!types.is_empty(), NoTypesSnafu {});
         let children = parse_struct_children_from_proto(types, 0)?;
-        Ok(Self { children })
+        let all_children = get_all_children_indices_set(&children);
+        Ok(Self {
+            children,
+            all_children,
+        })
     }
 }
 
@@ -95,6 +110,13 @@ impl Display for RootDataType {
         }
         Ok(())
     }
+}
+
+fn get_all_children_indices_set(columns: &[NamedColumn]) -> HashSet<usize> {
+    let mut set = HashSet::new();
+    set.insert(0);
+    set.extend(columns.iter().flat_map(|c| c.data_type().all_indices()));
+    set
 }
 
 #[derive(Debug, Clone)]
@@ -285,18 +307,17 @@ impl DataType {
             | DataType::Date { .. } => vec![],
             DataType::Struct { children, .. } => children
                 .iter()
-                .flat_map(|col| col.data_type().children_indices())
+                .flat_map(|col| col.data_type().all_indices())
                 .collect(),
             DataType::List { child, .. } => child.all_indices(),
             DataType::Map { key, value, .. } => {
-                let mut indices = key.children_indices();
-                indices.extend(value.children_indices());
+                let mut indices = key.all_indices();
+                indices.extend(value.all_indices());
                 indices
             }
-            DataType::Union { variants, .. } => variants
-                .iter()
-                .flat_map(|dt| dt.children_indices())
-                .collect(),
+            DataType::Union { variants, .. } => {
+                variants.iter().flat_map(|dt| dt.all_indices()).collect()
+            }
         }
     }
 

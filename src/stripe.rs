@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashSet;
 use std::{collections::HashMap, io::Read, sync::Arc};
 
 use bytes::Bytes;
@@ -151,14 +150,13 @@ impl Stripe {
                 )
             })
             .collect();
-        let column_ids = collect_required_column_ids(&columns);
 
         let mut stream_map = HashMap::new();
         let mut stream_offset = info.offset();
         for stream in &footer.streams {
             let length = stream.length();
             let column_id = stream.column();
-            if column_ids.contains(&column_id) {
+            if projected_data_type.contains_column_index(column_id as usize) {
                 let kind = stream.kind();
                 let data = reader.get_bytes(stream_offset, length).context(IoSnafu)?;
                 stream_map.insert((column_id, kind), data);
@@ -211,14 +209,13 @@ impl Stripe {
                 )
             })
             .collect();
-        let column_ids = collect_required_column_ids(&columns);
 
         let mut stream_map = HashMap::new();
         let mut stream_offset = info.offset();
         for stream in &footer.streams {
             let length = stream.length();
             let column_id = stream.column();
-            if column_ids.contains(&column_id) {
+            if projected_data_type.contains_column_index(column_id as usize) {
                 let kind = stream.kind();
                 let data = reader
                     .get_bytes(stream_offset, length)
@@ -300,13 +297,4 @@ fn deserialize_stripe_footer(
         .read_to_end(&mut buffer)
         .context(error::IoSnafu)?;
     StripeFooter::decode(buffer.as_slice()).context(error::DecodeProtoSnafu)
-}
-
-fn collect_required_column_ids(columns: &[Column]) -> HashSet<u32> {
-    let mut set = HashSet::new();
-    for column in columns {
-        set.insert(column.column_id());
-        set.extend(collect_required_column_ids(&column.children()));
-    }
-    set
 }
