@@ -53,7 +53,7 @@ impl UnionArrayDecoder {
             .children()
             .iter()
             .zip(fields.iter())
-            .map(|(child, (_id, field))| array_decoder_factory(child, field.clone(), stripe))
+            .map(|(child, (_, field))| array_decoder_factory(child, field.data_type(), stripe))
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {

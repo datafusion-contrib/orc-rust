@@ -45,7 +45,7 @@ impl ListArrayDecoder {
         let present = PresentDecoder::from_stripe(stripe, column);
 
         let child = &column.children()[0];
-        let inner = array_decoder_factory(child, field.clone(), stripe)?;
+        let inner = array_decoder_factory(child, field.data_type(), stripe)?;
 
         let reader = stripe.stream_map().get(column, Kind::Length);
         let lengths = get_unsigned_int_decoder(reader, column.rle_version());

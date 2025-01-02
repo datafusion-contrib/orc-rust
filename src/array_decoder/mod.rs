@@ -21,7 +21,7 @@ use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, PrimitiveArray}
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::ArrowNativeTypeOp;
 use arrow::datatypes::ArrowPrimitiveType;
-use arrow::datatypes::{DataType as ArrowDataType, Field};
+use arrow::datatypes::DataType as ArrowDataType;
 use arrow::datatypes::{
     Date32Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, SchemaRef,
 };
@@ -258,10 +258,10 @@ impl Iterator for NaiveStripeDecoder {
 
 pub fn array_decoder_factory(
     column: &Column,
-    field: Arc<Field>,
+    hinted_arrow_type: &ArrowDataType,
     stripe: &Stripe,
 ) -> Result<Box<dyn ArrayBatchDecoder>> {
-    let decoder: Box<dyn ArrayBatchDecoder> = match (column.data_type(), field.data_type()) {
+    let decoder: Box<dyn ArrayBatchDecoder> = match (column.data_type(), hinted_arrow_type) {
         // TODO: try make branches more generic, reduce duplication
         (DataType::Boolean { .. }, ArrowDataType::Boolean) => {
             let iter = stripe.stream_map().get(column, Kind::Data);
@@ -433,17 +433,13 @@ impl NaiveStripeDecoder {
     }
 
     pub fn new(stripe: Stripe, schema_ref: SchemaRef, batch_size: usize) -> Result<Self> {
-        let mut decoders = Vec::with_capacity(stripe.columns().len());
         let number_of_rows = stripe.number_of_rows();
-
-        for (col, field) in stripe
+        let decoders = stripe
             .columns()
             .iter()
-            .zip(schema_ref.fields.iter().cloned())
-        {
-            let decoder = array_decoder_factory(col, field, &stripe)?;
-            decoders.push(decoder);
-        }
+            .zip(schema_ref.fields.iter())
+            .map(|(col, field)| array_decoder_factory(col, field.data_type(), &stripe))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             stripe,
