@@ -29,11 +29,11 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn new(name: &str, data_type: &DataType, footer: &Arc<StripeFooter>) -> Self {
+    pub fn new(name: String, data_type: DataType, footer: Arc<StripeFooter>) -> Self {
         Self {
-            footer: footer.clone(),
-            data_type: data_type.clone(),
-            name: name.to_string(),
+            footer,
+            data_type,
+            name,
         }
     }
 
