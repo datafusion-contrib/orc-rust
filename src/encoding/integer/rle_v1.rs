@@ -167,79 +167,82 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
     }
 }
 
+enum RleV1EncoderState<N: NInt> {
+    /// When buffer is empty and no values to encode.
+    Empty,
+    /// Run model with run value and delta
+    Run { value: N, delta: i8, count: usize },
+    /// Literal model with values saved in buffer
+    Literal { buffer: Vec<N> },
+}
+
+impl<N: NInt> Default for RleV1EncoderState<N> {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
 pub struct RleV1Encoder<N: NInt, S: EncodingSign> {
     writer: BytesMut,
-    /// Literal values to encode.
-    literals: [N; MAX_LITERAL_LENGTH],
-    /// Represents the number of elements currently in `literals` if Literals,
-    /// otherwise represents the length of the Run.
-    num_literals: usize,
-    /// Tracks if current Literal sequence will turn into a Run sequence due to
-    /// repeated values at the end of the value sequence.
-    tail_run_length: usize,
-    /// If in Run sequence or not, and keeps the corresponding value.
-    run_value: Option<N>,
-    /// The delta value keeped now
-    run_delta: i64,
+    state: RleV1EncoderState<N>,
     sign: PhantomData<S>,
 }
 
 impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
-    // Algorithm adapted from:
-    // https://github.com/apache/orc/blob/main/java/core/src/java/org/apache/orc/impl/RunLengthIntegerWriter.java
     fn process_value(&mut self, value: N) {
-        if self.num_literals == 0 {
-            self.literals[0] = value;
-            self.num_literals = 1;
-            self.tail_run_length = 1;
-        } else if let Some(run_value) = self.run_value {
-            if value.as_i64() == run_value.as_i64() + self.run_delta * self.num_literals as i64 {
-                self.num_literals += 1;
-                if self.num_literals == MAX_RUN_LENGTH {
-                    self.flush();
-                }
-            } else {
-                self.flush();
-                self.literals[self.num_literals] = value;
-                self.num_literals += 1;
-                self.tail_run_length = 1;
+        match &mut self.state {
+            RleV1EncoderState::Empty => {
+                // change to literal model
+                // TODO: avoid new vec
+                let mut buffer = Vec::with_capacity(MAX_LITERAL_LENGTH);
+                buffer.push(value);
+                self.state = RleV1EncoderState::Literal { buffer }
             }
-        } else {
-            if self.tail_run_length == 1 {
-                self.run_delta = (value - self.literals[self.num_literals - 1]).as_i64();
-                if self.run_delta < MIN_DELTA || self.run_delta > MAX_DELTA {
-                    self.tail_run_length = 1;
+            RleV1EncoderState::Run {
+                value: run_value,
+                delta,
+                count,
+            } => {
+                if run_value.as_i64() + *delta as i64 * *count as i64 == value.as_i64() {
+                    // keep run model
+                    *count += 1;
+                    if *count == MAX_RUN_LENGTH {
+                        // reach run limit
+                        write_run::<_, S>(&mut self.writer, value, *delta, *count);
+                    }
                 } else {
-                    self.tail_run_length = 2;
-                }
-            } else if value.as_i64()
-                == self.literals[self.num_literals - 1].as_i64() + self.run_delta
-            {
-                self.tail_run_length += 1;
-            } else {
-                self.run_delta = (value - self.literals[self.num_literals - 1]).as_i64();
-                if self.run_delta < MIN_DELTA || self.run_delta > MAX_DELTA {
-                    self.tail_run_length = 1;
-                } else {
-                    self.tail_run_length = 2;
+                    // write run values and change to literal model
+                    write_run::<_, S>(&mut self.writer, value, *delta, *count);
+                    // TODO: avoid new vec
+                    let mut buffer = Vec::with_capacity(MAX_LITERAL_LENGTH);
+                    buffer.push(value);
+                    self.state = RleV1EncoderState::Literal { buffer };
                 }
             }
-            if self.tail_run_length == MIN_RUN_LENGTH {
-                if self.num_literals + 1 == MIN_RUN_LENGTH {
-                    self.run_value = Some(self.literals[0]);
-                    self.num_literals += 1;
-                } else {
-                    self.num_literals -= MIN_RUN_LENGTH - 1;
-                    let run_value = self.literals[self.num_literals];
-                    self.flush();
-                    self.run_value = Some(run_value);
-                    self.num_literals = MIN_RUN_LENGTH;
-                }
-            } else {
-                self.literals[self.num_literals] = value;
-                self.num_literals += 1;
-                if self.num_literals == MAX_LITERAL_LENGTH {
-                    self.flush();
+            RleV1EncoderState::Literal { buffer } => {
+                buffer.push(value);
+                let count = buffer.len();
+                let delta = (value - buffer[count - 2]).as_i64();
+                // check if can change to run model
+                if count >= MIN_RUN_LENGTH
+                    && delta >= MIN_DELTA
+                    && delta <= MAX_DELTA
+                    && delta == (buffer[count - 2] - buffer[count - 3]).as_i64()
+                {
+                    // change to run model
+                    if count > MIN_RUN_LENGTH {
+                        // write the left literals
+                        write_literals::<_, S>(&mut self.writer, buffer, count - MIN_RUN_LENGTH);
+                    }
+                    self.state = RleV1EncoderState::Run {
+                        value: buffer[count - MIN_RUN_LENGTH],
+                        delta: delta as i8,
+                        count: MIN_RUN_LENGTH,
+                    }
+                } else if count == MAX_LITERAL_LENGTH {
+                    // reach buffer limit, write literals and change to empty state
+                    write_literals::<_, S>(&mut self.writer, buffer, MAX_LITERAL_LENGTH);
+                    self.state = RleV1EncoderState::Empty;
                 }
             }
         }
@@ -247,27 +250,37 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
 
     // Flush values to witer and reset state
     fn flush(&mut self) {
-        if self.num_literals > 0 {
-            if let Some(run_value) = self.run_value {
-                let header = EncodingType::Run {
-                    length: self.num_literals,
-                    delta: self.run_delta as i8,
-                };
-                header.to_header(&mut self.writer);
-                write_varint_zigzagged::<_, S>(&mut self.writer, run_value);
-            } else {
-                let header = EncodingType::Literals {
-                    length: self.num_literals,
-                };
-                header.to_header(&mut self.writer);
-                for i in 0..self.num_literals {
-                    write_varint_zigzagged::<_, S>(&mut self.writer, self.literals[i]);
-                }
+        let state = std::mem::take(&mut self.state);
+        match state {
+            RleV1EncoderState::Empty => {}
+            RleV1EncoderState::Run {
+                value,
+                delta,
+                count,
+            } => {
+                write_run::<_, S>(&mut self.writer, value, delta, count);
+            }
+            RleV1EncoderState::Literal { buffer } => {
+                write_literals::<_, S>(&mut self.writer, &buffer, buffer.len());
             }
         }
-        self.run_value = None;
-        self.num_literals = 0;
-        self.tail_run_length = 0;
+    }
+}
+
+fn write_run<N: NInt, S: EncodingSign>(writer: &mut BytesMut, value: N, delta: i8, count: usize) {
+    let header = EncodingType::Run {
+        length: count,
+        delta: delta,
+    };
+    header.to_header(writer);
+    write_varint_zigzagged::<_, S>(writer, value);
+}
+
+fn write_literals<N: NInt, S: EncodingSign>(writer: &mut BytesMut, buffer: &Vec<N>, count: usize) {
+    let header = EncodingType::Literals { length: count };
+    header.to_header(writer);
+    for i in 0..count {
+        write_varint_zigzagged::<_, S>(writer, buffer[i]);
     }
 }
 
@@ -281,12 +294,8 @@ impl<N: NInt, S: EncodingSign> PrimitiveValueEncoder<N> for RleV1Encoder<N, S> {
     fn new() -> Self {
         Self {
             writer: BytesMut::new(),
+            state: Default::default(),
             sign: Default::default(),
-            literals: [N::zero(); MAX_LITERAL_LENGTH],
-            num_literals: 0,
-            tail_run_length: 0,
-            run_value: None,
-            run_delta: 0,
         }
     }
 
