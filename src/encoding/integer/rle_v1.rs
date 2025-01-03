@@ -282,7 +282,7 @@ impl<N: NInt, S: EncodingSign> PrimitiveValueEncoder<N> for RleV1Encoder<N, S> {
         Self {
             writer: BytesMut::new(),
             sign: Default::default(),
-            literals: [N::default(); MAX_LITERAL_LENGTH],
+            literals: [N::zero(); MAX_LITERAL_LENGTH],
             num_literals: 0,
             tail_run_length: 0,
             run_value: None,
