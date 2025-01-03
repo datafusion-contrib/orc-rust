@@ -213,7 +213,7 @@ fn derive_present_vec(
     parent_present: Option<&NullBuffer>,
     batch_size: usize,
 ) -> Option<Result<NullBuffer>> {
-    match (present, parent_present) {
+    let present = match (present, parent_present) {
         (Some(present), Some(parent_present)) => {
             let element_count = parent_present.len() - parent_present.null_count();
             let present = present.next_buffer(element_count);
@@ -222,6 +222,12 @@ fn derive_present_vec(
         (Some(present), None) => Some(present.next_buffer(batch_size)),
         (None, Some(parent_present)) => Some(Ok(parent_present.clone())),
         (None, None) => None,
+    };
+
+    // omit the null buffer if there are no nulls
+    match present {
+        Some(Ok(present)) if present.null_count() > 0 => Some(Ok(present)),
+        _ => None,
     }
 }
 

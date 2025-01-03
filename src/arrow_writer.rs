@@ -268,12 +268,13 @@ mod tests {
             Int64Array, Int8Array, LargeBinaryArray, LargeStringArray, RecordBatchReader,
             StringArray,
         },
+        buffer::NullBuffer,
         compute::concat_batches,
         datatypes::{DataType as ArrowDataType, Field, Schema},
     };
     use bytes::Bytes;
 
-    use crate::ArrowReaderBuilder;
+    use crate::{stripe::Stripe, ArrowReaderBuilder};
 
     use super::*;
 
@@ -473,5 +474,63 @@ mod tests {
 
         let rows = roundtrip(&[batch1, batch2]);
         assert_eq!(expected_batch, rows[0]);
+    }
+
+    #[test]
+    fn test_empty_null_buffers() {
+        // Create an ORC file with present streams, but which have no nulls.
+        // When this file is read then the resulting Arrow arrays show have
+        // NO null buffer, even though there is a present stream.
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "int64",
+            ArrowDataType::Int64,
+            true,
+        )]));
+
+        // Array with null buffer but has no nulls
+        let array_empty_nulls = Arc::new(Int64Array::from_iter_values_with_nulls(
+            vec![1],
+            Some(NullBuffer::from_iter(vec![true])),
+        ));
+        assert!(array_empty_nulls.nulls().is_some());
+        assert!(array_empty_nulls.null_count() == 0);
+
+        let batch = RecordBatch::try_new(schema, vec![array_empty_nulls]).unwrap();
+
+        // Encoding to bytes
+        let mut f = vec![];
+        let mut writer = ArrowWriterBuilder::new(&mut f, batch.schema())
+            .try_build()
+            .unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let mut f = Bytes::from(f);
+        let builder = ArrowReaderBuilder::try_new(f.clone()).unwrap();
+
+        // Ensure the ORC file we wrote indeed has a present stream
+        let stripe = Stripe::new(
+            &mut f,
+            &builder.file_metadata,
+            builder.file_metadata().root_data_type(),
+            &builder.file_metadata().stripe_metadatas()[0],
+        )
+        .unwrap();
+        assert_eq!(stripe.columns().len(), 1);
+        // Make sure we're getting the right column
+        assert_eq!(stripe.columns()[0].name(), "int64");
+        // Then check present stream
+        let present_stream = stripe
+            .stream_map()
+            .get_opt(&stripe.columns()[0], proto::stream::Kind::Present);
+        assert!(present_stream.is_some());
+
+        // Decoding from bytes
+        let reader = builder.build();
+        let rows = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].num_columns(), 1);
+        // Ensure read array has no null buffer
+        assert!(rows[0].column(0).nulls().is_none());
     }
 }
