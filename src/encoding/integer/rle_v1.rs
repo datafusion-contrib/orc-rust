@@ -157,12 +157,20 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
     }
 }
 
+/// Represents the state of the RLE V1 encoder.
+///
+/// The encoder can be in one of three states:
+///
+/// 1. `Empty`: The buffer is empty and there are no values to encode.
+/// 2. `Run`: The encoder is in run mode, with a run value, delta, and length.
+/// 3. `Literal`: The encoder is in literal mode, with values saved in a buffer.
 enum RleV1EncoderState<N: NInt> {
-    /// When buffer is empty and no values to encode.
     Empty,
-    /// Run model with run value and delta
-    Run { value: N, delta: i8, length: usize },
-    /// Literal model with values saved in buffer
+    Run {
+        value: N,
+        delta: i8,
+        length: usize,
+    },
     Literal {
         buffer: [N; MAX_LITERAL_LENGTH],
         length: usize,
@@ -175,6 +183,16 @@ impl<N: NInt> Default for RleV1EncoderState<N> {
     }
 }
 
+/// `RleV1Encoder` is responsible for encoding a stream of integers using the Run Length Encoding (RLE) version 1 format.
+///
+/// # Type Parameters
+/// - `N`: The integer type to be encoded, which must implement the `NInt` trait.
+/// - `S`: The encoding sign type, which must implement the `EncodingSign` trait.
+///
+/// # Fields
+/// - `writer`: A `BytesMut` buffer that holds the encoded bytes.
+/// - `state`: The current state of the encoder, which can be `Empty`, `Run`, or `Literal`.
+/// - `sign`: A `PhantomData` marker for the encoding sign type.
 pub struct RleV1Encoder<N: NInt, S: EncodingSign> {
     writer: BytesMut,
     state: RleV1EncoderState<N>,
@@ -182,6 +200,26 @@ pub struct RleV1Encoder<N: NInt, S: EncodingSign> {
 }
 
 impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
+    /// Processes a given value and updates the encoder state accordingly.
+    ///
+    /// The function handles three possible states of the encoder:
+    ///
+    /// 1. `RleV1EncoderState::Empty`:
+    ///    - Transitions to the `Literal` state with the given value as the first element in the buffer.
+    ///
+    /// 2. `RleV1EncoderState::Run`:
+    ///    - If the value continues the current run (i.e., it matches the expected value based on the run's delta and length),
+    ///      the run length is incremented. If the run length reaches `MAX_RUN_LENGTH`, the run is written out and the state
+    ///      transitions to `Empty`.
+    ///    - If the value does not continue the current run, the existing run is written out and the state transitions to
+    ///      `Literal` with the new value as the first element in the buffer.
+    ///
+    /// 3. `RleV1EncoderState::Literal`:
+    ///    - The value is added to the buffer. If the buffer length reaches `MAX_LITERAL_LENGTH`, the buffer is written out
+    ///      and the state transitions to `Empty`.
+    ///    - If the buffer length is at least `MIN_RUN_LENGTH` and the values in the buffer form a valid run (i.e., the deltas
+    ///      between consecutive values are consistent and within the allowed range), the state transitions to `Run`.
+    ///    - Otherwise, the state remains `Literal`.
     fn process_value(&mut self, value: N) {
         match &mut self.state {
             RleV1EncoderState::Empty => {
@@ -244,12 +282,27 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                     // reach buffer limit, write literals and change to empty state
                     write_literals::<_, S>(&mut self.writer, buffer, MAX_LITERAL_LENGTH);
                     self.state = RleV1EncoderState::Empty;
+                } else {
+                    // keep literal mode
                 }
             }
         }
     }
 
-    // Flush values to witer and reset state
+    /// Flushes the current state of the encoder, writing out any buffered values.
+    ///
+    /// This function handles the three possible states of the encoder:
+    ///
+    /// 1. `RleV1EncoderState::Empty`:
+    ///    - No action is needed as there are no buffered values to write.
+    ///
+    /// 2. `RleV1EncoderState::Run`:
+    ///    - Writes out the current run of values.
+    ///
+    /// 3. `RleV1EncoderState::Literal`:
+    ///    - Writes out the buffered literal values.
+    ///
+    /// After calling this function, the encoder state will be reset to `Empty`.
     fn flush(&mut self) {
         let state = std::mem::take(&mut self.state);
         match state {
