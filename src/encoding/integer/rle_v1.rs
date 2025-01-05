@@ -163,7 +163,10 @@ enum RleV1EncoderState<N: NInt> {
     /// Run model with run value and delta
     Run { value: N, delta: i8, length: usize },
     /// Literal model with values saved in buffer
-    Literal { buffer: Vec<N> },
+    Literal {
+        buffer: [N; MAX_LITERAL_LENGTH],
+        length: usize,
+    },
 }
 
 impl<N: NInt> Default for RleV1EncoderState<N> {
@@ -183,10 +186,14 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
         match &mut self.state {
             RleV1EncoderState::Empty => {
                 // change to literal model
-                // TODO: avoid new vec
-                let mut buffer = Vec::with_capacity(MAX_LITERAL_LENGTH);
-                buffer.push(value);
-                self.state = RleV1EncoderState::Literal { buffer }
+                self.state = RleV1EncoderState::Literal {
+                    buffer: {
+                        let mut buf = [N::zero(); MAX_LITERAL_LENGTH];
+                        buf[0] = value;
+                        buf
+                    },
+                    length: 1,
+                }
             }
             RleV1EncoderState::Run {
                 value: run_value,
@@ -204,32 +211,36 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                 } else {
                     // write run values and change to literal model
                     write_run::<_, S>(&mut self.writer, *run_value, *delta, *length);
-                    // TODO: avoid new vec
-                    let mut buffer = Vec::with_capacity(MAX_LITERAL_LENGTH);
-                    buffer.push(value);
-                    self.state = RleV1EncoderState::Literal { buffer };
+                    self.state = RleV1EncoderState::Literal {
+                        buffer: {
+                            let mut buf = [N::zero(); MAX_LITERAL_LENGTH];
+                            buf[0] = value;
+                            buf
+                        },
+                        length: 1,
+                    };
                 }
             }
-            RleV1EncoderState::Literal { buffer } => {
-                buffer.push(value);
-                let length = buffer.len();
-                let delta = (value - buffer[length - 2]).as_i64();
+            RleV1EncoderState::Literal { buffer, length } => {
+                buffer[*length] = value;
+                *length += 1;
+                let delta = (value - buffer[*length - 2]).as_i64();
                 // check if can change to run model
-                if length >= MIN_RUN_LENGTH
+                if *length >= MIN_RUN_LENGTH
                     && (MIN_DELTA..=MAX_DELTA).contains(&delta)
-                    && delta == (buffer[length - 2] - buffer[length - 3]).as_i64()
+                    && delta == (buffer[*length - 2] - buffer[*length - 3]).as_i64()
                 {
                     // change to run model
-                    if length > MIN_RUN_LENGTH {
+                    if *length > MIN_RUN_LENGTH {
                         // write the left literals
-                        write_literals::<_, S>(&mut self.writer, buffer, length - MIN_RUN_LENGTH);
+                        write_literals::<_, S>(&mut self.writer, buffer, *length - MIN_RUN_LENGTH);
                     }
                     self.state = RleV1EncoderState::Run {
-                        value: buffer[length - MIN_RUN_LENGTH],
+                        value: buffer[*length - MIN_RUN_LENGTH],
                         delta: delta as i8,
                         length: MIN_RUN_LENGTH,
                     }
-                } else if length == MAX_LITERAL_LENGTH {
+                } else if *length == MAX_LITERAL_LENGTH {
                     // reach buffer limit, write literals and change to empty state
                     write_literals::<_, S>(&mut self.writer, buffer, MAX_LITERAL_LENGTH);
                     self.state = RleV1EncoderState::Empty;
@@ -250,8 +261,8 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
             } => {
                 write_run::<_, S>(&mut self.writer, value, delta, length);
             }
-            RleV1EncoderState::Literal { buffer } => {
-                write_literals::<_, S>(&mut self.writer, &buffer, buffer.len());
+            RleV1EncoderState::Literal { buffer, length } => {
+                write_literals::<_, S>(&mut self.writer, &buffer, length);
             }
         }
     }
