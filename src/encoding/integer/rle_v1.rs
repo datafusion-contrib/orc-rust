@@ -345,6 +345,12 @@ mod tests {
         let original = vec![2, 3, 6, 7, 11];
         let encoded = [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb];
         test_helper(&original, &encoded);
+
+        let original = vec![2, 3, 6, 7, 11, 1, 2, 3, 0, 256];
+        let encoded = [
+            0xfb, 0x02, 0x03, 0x06, 0x07, 0x0b, 0x00, 0x01, 0x01, 0xfe, 0x00, 0x80, 0x02,
+        ];
+        test_helper(&original, &encoded);
         Ok(())
     }
 }
