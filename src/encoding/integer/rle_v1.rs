@@ -67,16 +67,6 @@ impl EncodingType {
         };
         Ok(opt_encoding)
     }
-
-    /// Encode header to write
-    fn to_header(&self, writer: &mut BytesMut) {
-        if let Self::Run { length, delta } = *self {
-            writer.put_u8(length as u8 - 3);
-            writer.put_u8(delta as u8);
-        } else if let Self::Literals { length } = *self {
-            writer.put_u8(-(length as i8) as u8);
-        }
-    }
 }
 
 /// Decodes a stream of Integer Run Length Encoded version 1 bytes.
@@ -225,8 +215,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                 let delta = (value - buffer[count - 2]).as_i64();
                 // check if can change to run model
                 if count >= MIN_RUN_LENGTH
-                    && delta >= MIN_DELTA
-                    && delta <= MAX_DELTA
+                    && (MIN_DELTA..=MAX_DELTA).contains(&delta)
                     && delta == (buffer[count - 2] - buffer[count - 3]).as_i64()
                 {
                     // change to run model
@@ -267,20 +256,20 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
     }
 }
 
-fn write_run<N: NInt, S: EncodingSign>(writer: &mut BytesMut, value: N, delta: i8, count: usize) {
-    let header = EncodingType::Run {
-        length: count,
-        delta: delta,
-    };
-    header.to_header(writer);
+fn write_run<N: NInt, S: EncodingSign>(writer: &mut BytesMut, value: N, delta: i8, length: usize) {
+    // write header
+    writer.put_u8(length as u8 - 3);
+    writer.put_u8(delta as u8);
+    // write run value
     write_varint_zigzagged::<_, S>(writer, value);
 }
 
-fn write_literals<N: NInt, S: EncodingSign>(writer: &mut BytesMut, buffer: &Vec<N>, count: usize) {
-    let header = EncodingType::Literals { length: count };
-    header.to_header(writer);
-    for i in 0..count {
-        write_varint_zigzagged::<_, S>(writer, buffer[i]);
+fn write_literals<N: NInt, S: EncodingSign>(writer: &mut BytesMut, buffer: &[N], length: usize) {
+    // write header
+    writer.put_u8(-(length as i8) as u8);
+    // write literals
+    for literal in buffer.iter().take(length) {
+        write_varint_zigzagged::<_, S>(writer, *literal);
     }
 }
 
