@@ -185,15 +185,6 @@ impl<N: NInt> Default for RleV1EncodingState<N> {
 }
 
 /// `RleV1Encoder` is responsible for encoding a stream of integers using the Run Length Encoding (RLE) version 1 format.
-///
-/// # Type Parameters
-/// - `N`: The integer type to be encoded, which must implement the `NInt` trait.
-/// - `S`: The encoding sign type, which must implement the `EncodingSign` trait.
-///
-/// # Fields
-/// - `writer`: A `BytesMut` buffer that holds the encoded bytes.
-/// - `state`: The current state of the encoder, which can be `Empty`, `Run`, or `Literal`.
-/// - `sign`: A `PhantomData` marker for the encoding sign type.
 pub struct RleV1Encoder<N: NInt, S: EncodingSign> {
     writer: BytesMut,
     state: RleV1EncodingState<N>,
@@ -239,7 +230,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                 delta,
                 length,
             } => {
-                if run_value.as_i64() + *delta as i64 * *length as i64 == value.as_i64() {
+                if run_value.as_i64() + (*delta as i64) * (*length as i64) == value.as_i64() {
                     // keep run model
                     *length += 1;
                     if *length == MAX_RUN_LENGTH {
@@ -272,7 +263,10 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                     // change to run model
                     if *length > MIN_RUN_LENGTH {
                         // write the left literals
-                        write_literals::<_, S>(&mut self.writer, buffer, *length - MIN_RUN_LENGTH);
+                        write_literals::<_, S>(
+                            &mut self.writer,
+                            &buffer[..(*length - MIN_RUN_LENGTH)],
+                        );
                     }
                     self.state = RleV1EncodingState::Run {
                         value: buffer[*length - MIN_RUN_LENGTH],
@@ -281,11 +275,10 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                     }
                 } else if *length == MAX_LITERAL_LENGTH {
                     // reach buffer limit, write literals and change to empty state
-                    write_literals::<_, S>(&mut self.writer, buffer, MAX_LITERAL_LENGTH);
+                    write_literals::<_, S>(&mut self.writer, buffer);
                     self.state = RleV1EncodingState::Empty;
-                } else {
-                    // keep literal mode
                 }
+                // else keep literal mode
             }
         }
     }
@@ -316,7 +309,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                 write_run::<_, S>(&mut self.writer, value, delta, length);
             }
             RleV1EncodingState::Literal { buffer, length } => {
-                write_literals::<_, S>(&mut self.writer, &buffer, length);
+                write_literals::<_, S>(&mut self.writer, &buffer[..length]);
             }
         }
     }
@@ -330,11 +323,11 @@ fn write_run<N: NInt, S: EncodingSign>(writer: &mut BytesMut, value: N, delta: i
     write_varint_zigzagged::<_, S>(writer, value);
 }
 
-fn write_literals<N: NInt, S: EncodingSign>(writer: &mut BytesMut, buffer: &[N], length: usize) {
+fn write_literals<N: NInt, S: EncodingSign>(writer: &mut BytesMut, buffer: &[N]) {
     // write header
-    writer.put_u8(-(length as i8) as u8);
+    writer.put_u8(-(buffer.len() as i8) as u8);
     // write literals
-    for literal in buffer.iter().take(length) {
+    for literal in buffer {
         write_varint_zigzagged::<_, S>(writer, *literal);
     }
 }
