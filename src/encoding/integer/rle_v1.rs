@@ -17,11 +17,10 @@
 
 //! Handling decoding of Integer Run Length Encoded V1 data in ORC files
 
-use std::{io::Read, marker::PhantomData};
+use std::{cell::RefCell, io::Read, marker::PhantomData, ops::RangeInclusive, rc::Rc};
 
 use bytes::{BufMut, BytesMut};
 use snafu::OptionExt;
-use std::ops::RangeInclusive;
 
 use crate::{
     encoding::{
@@ -157,6 +156,8 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
     }
 }
 
+type Buffer<N> = Rc<RefCell<Vec<N>>>;
+
 /// Represents the state of the RLE V1 encoder.
 ///
 /// The encoder can be in one of three states:
@@ -167,15 +168,8 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
 #[derive(Debug, Clone, Eq, PartialEq)]
 enum RleV1EncodingState<N: NInt> {
     Empty,
-    Run {
-        value: N,
-        delta: i8,
-        length: usize,
-    },
-    Literal {
-        buffer: [N; MAX_LITERAL_LENGTH],
-        length: usize,
-    },
+    Run { value: N, delta: i8, length: usize },
+    Literal { buffer: Buffer<N> },
 }
 
 impl<N: NInt> Default for RleV1EncodingState<N> {
@@ -188,6 +182,7 @@ impl<N: NInt> Default for RleV1EncodingState<N> {
 pub struct RleV1Encoder<N: NInt, S: EncodingSign> {
     writer: BytesMut,
     state: RleV1EncodingState<N>,
+    buffer: Buffer<N>,
     sign: PhantomData<S>,
 }
 
@@ -218,11 +213,10 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                 // change to literal model
                 self.state = RleV1EncodingState::Literal {
                     buffer: {
-                        let mut buf = [N::zero(); MAX_LITERAL_LENGTH];
-                        buf[0] = value;
+                        let buf = self.buffer.clone();
+                        buf.borrow_mut().push(value);
                         buf
                     },
-                    length: 1,
                 }
             }
             RleV1EncodingState::Run {
@@ -243,39 +237,45 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                     write_run::<_, S>(&mut self.writer, *run_value, *delta, *length);
                     self.state = RleV1EncodingState::Literal {
                         buffer: {
-                            let mut buf = [N::zero(); MAX_LITERAL_LENGTH];
-                            buf[0] = value;
+                            let buf = self.buffer.clone();
+                            buf.borrow_mut().push(value);
                             buf
                         },
-                        length: 1,
                     };
                 }
             }
-            RleV1EncodingState::Literal { buffer, length } => {
-                buffer[*length] = value;
-                *length += 1;
-                let delta = (value - buffer[*length - 2]).as_i64();
+            RleV1EncodingState::Literal { buffer } => {
+                let mut buf = buffer.borrow_mut();
+                buf.push(value);
+                let length = buf.len();
+                let delta = (value - buf[length - 2]).as_i64();
                 // check if can change to run model
-                if *length >= MIN_RUN_LENGTH
+                if length >= MIN_RUN_LENGTH
                     && DELAT_RANGE.contains(&delta)
-                    && delta == (buffer[*length - 2] - buffer[*length - 3]).as_i64()
+                    && delta == (buf[length - 2] - buf[length - 3]).as_i64()
                 {
                     // change to run model
-                    if *length > MIN_RUN_LENGTH {
+                    if length > MIN_RUN_LENGTH {
                         // write the left literals
-                        write_literals::<_, S>(
-                            &mut self.writer,
-                            &buffer[..(*length - MIN_RUN_LENGTH)],
-                        );
+                        write_literals::<_, S>(&mut self.writer, &buf[..(length - MIN_RUN_LENGTH)]);
                     }
+                    let run_value = buf[length - MIN_RUN_LENGTH];
+                    // clear buffer
+                    buf.clear();
+                    // release the RefMut of buffer to pass borrow checker
+                    drop(buf);
                     self.state = RleV1EncodingState::Run {
-                        value: buffer[*length - MIN_RUN_LENGTH],
+                        value: run_value,
                         delta: delta as i8,
                         length: MIN_RUN_LENGTH,
                     }
-                } else if *length == MAX_LITERAL_LENGTH {
+                } else if length == MAX_LITERAL_LENGTH {
                     // reach buffer limit, write literals and change to empty state
-                    write_literals::<_, S>(&mut self.writer, buffer);
+                    write_literals::<_, S>(&mut self.writer, &buf);
+                    // clear buffer
+                    buf.clear();
+                    // release the RefMut of buffer to pass borrow checker
+                    drop(buf);
                     self.state = RleV1EncodingState::Empty;
                 }
                 // else keep literal mode
@@ -308,8 +308,8 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
             } => {
                 write_run::<_, S>(&mut self.writer, value, delta, length);
             }
-            RleV1EncodingState::Literal { buffer, length } => {
-                write_literals::<_, S>(&mut self.writer, &buffer[..length]);
+            RleV1EncodingState::Literal { buffer } => {
+                write_literals::<_, S>(&mut self.writer, &buffer.borrow());
             }
         }
     }
@@ -343,6 +343,7 @@ impl<N: NInt, S: EncodingSign> PrimitiveValueEncoder<N> for RleV1Encoder<N, S> {
         Self {
             writer: BytesMut::new(),
             state: Default::default(),
+            buffer: Rc::new(RefCell::new(Vec::with_capacity(MAX_LITERAL_LENGTH))),
             sign: Default::default(),
         }
     }
