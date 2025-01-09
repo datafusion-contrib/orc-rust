@@ -21,6 +21,7 @@ use std::{io::Read, marker::PhantomData};
 
 use bytes::{BufMut, BytesMut};
 use snafu::OptionExt;
+use std::ops::RangeInclusive;
 
 use crate::{
     encoding::{
@@ -40,8 +41,7 @@ use super::{
 const MIN_RUN_LENGTH: usize = 3;
 const MAX_RUN_LENGTH: usize = 127 + MIN_RUN_LENGTH;
 const MAX_LITERAL_LENGTH: usize = 128;
-const MAX_DELTA: i64 = 127;
-const MIN_DELTA: i64 = -128;
+const DELAT_RANGE: RangeInclusive<i64> = -128..=127;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum EncodingType {
@@ -257,7 +257,7 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
                 let delta = (value - buffer[*length - 2]).as_i64();
                 // check if can change to run model
                 if *length >= MIN_RUN_LENGTH
-                    && (MIN_DELTA..=MAX_DELTA).contains(&delta)
+                    && DELAT_RANGE.contains(&delta)
                     && delta == (buffer[*length - 2] - buffer[*length - 3]).as_i64()
                 {
                     // change to run model
