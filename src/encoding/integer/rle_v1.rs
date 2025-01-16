@@ -191,20 +191,21 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
     ///
     /// 1. `RleV1EncoderState::Empty`:
     ///    - Transitions to the `Literal` state with the given value as the first element in the buffer.
-    /// 2. `RleV1EncoderState::Literal`:
-    ///    - The value is added to the buffer. If the buffer length reaches `MAX_LITERAL_LENGTH`, the buffer is written out
-    ///      and the state transitions to `Empty`.
-    ///    - If the buffer length is at least `MIN_RUN_LENGTH` and the values in the buffer form a valid run (i.e., the deltas
-    ///      between consecutive values are consistent and within the allowed range), the state transitions to `Run`.
-    ///    - Otherwise, the state remains `Literal`.
-    /// 3. `RleV1EncoderState::Run`:
+    ///
+    /// 2. `RleV1EncoderState::Run`:
     ///    - If the value continues the current run (i.e., it matches the expected value based on the run's delta and length),
     ///      the run length is incremented. If the run length reaches `MAX_RUN_LENGTH`, the run is written out and the state
     ///      transitions to `Empty`.
     ///    - If the value does not continue the current run, the existing run is written out and the state transitions to
     ///      `Literal` with the new value as the first element in the buffer.
     ///
-
+    /// 3. `RleV1EncoderState::Literal`:
+    ///    - The value is added to the buffer. If the buffer length reaches `MAX_LITERAL_LENGTH`, the buffer is written out
+    ///      and the state transitions to `Empty`.
+    ///    - If the buffer length is at least `MIN_RUN_LENGTH` and the values in the buffer form a valid run (i.e., the deltas
+    ///      between consecutive values are consistent and within the allowed range), the state transitions to `Run`.
+    ///    - Otherwise, the state remains `Literal`.
+    ///
     fn process_value(&mut self, value: N) {
         match &mut self.state {
             RleV1EncodingState::Empty => {
@@ -271,11 +272,11 @@ impl<N: NInt, S: EncodingSign> RleV1Encoder<N, S> {
     /// 1. `RleV1EncoderState::Empty`:
     ///    - No action is needed as there are no buffered values to write.
     ///
-    /// 2. `RleV1EncoderState::Run`:
-    ///    - Writes out the current run of values.
-    ///
     /// 3. `RleV1EncoderState::Literal`:
     ///    - Writes out the buffered literal values.
+    ///
+    /// 2. `RleV1EncoderState::Run`:
+    ///    - Writes out the current run of values.
     ///
     /// After calling this function, the encoder state will be reset to `Empty`.
     fn flush(&mut self) {
