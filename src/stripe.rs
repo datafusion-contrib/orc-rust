@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::collections::HashSet;
 use std::{collections::HashMap, io::Read, sync::Arc};
 
 use bytes::Bytes;
@@ -85,19 +84,19 @@ impl TryFrom<(&proto::StripeInformation, &proto::StripeStatistics)> for StripeMe
     type Error = error::OrcError;
 
     fn try_from(value: (&proto::StripeInformation, &proto::StripeStatistics)) -> Result<Self> {
-        let column_statistics = value
-            .1
+        let (info, statistics) = value;
+        let column_statistics = statistics
             .col_stats
             .iter()
             .map(TryFrom::try_from)
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             column_statistics,
-            offset: value.0.offset(),
-            index_length: value.0.index_length(),
-            data_length: value.0.data_length(),
-            footer_length: value.0.footer_length(),
-            number_of_rows: value.0.number_of_rows(),
+            offset: info.offset(),
+            index_length: info.index_length(),
+            data_length: info.data_length(),
+            footer_length: info.footer_length(),
+            number_of_rows: info.number_of_rows(),
         })
     }
 }
@@ -120,8 +119,7 @@ impl TryFrom<&proto::StripeInformation> for StripeMetadata {
 #[derive(Debug)]
 pub struct Stripe {
     columns: Vec<Column>,
-    /// <(ColumnId, Kind), Bytes>
-    stream_map: Arc<StreamMap>,
+    stream_map: StreamMap,
     number_of_rows: usize,
     tz: Option<chrono_tz::Tz>,
 }
@@ -129,38 +127,44 @@ pub struct Stripe {
 impl Stripe {
     pub fn new<R: ChunkReader>(
         reader: &mut R,
-        file_metadata: &Arc<FileMetadata>,
+        file_metadata: &FileMetadata,
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
     ) -> Result<Self> {
-        let compression = file_metadata.compression();
-
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
             .context(IoSnafu)?;
-        let footer = Arc::new(deserialize_stripe_footer(footer, compression)?);
+        let footer = Arc::new(deserialize_stripe_footer(
+            footer,
+            file_metadata.compression(),
+        )?);
 
         let columns: Vec<Column> = projected_data_type
             .children()
             .iter()
-            .map(|col| Column::new(col.name(), col.data_type(), &footer))
+            .map(|col| {
+                Column::new(
+                    col.name().to_string(),
+                    col.data_type().clone(),
+                    footer.clone(),
+                )
+            })
             .collect();
-        let column_ids = collect_required_column_ids(&columns);
 
         let mut stream_map = HashMap::new();
         let mut stream_offset = info.offset();
         for stream in &footer.streams {
             let length = stream.length();
             let column_id = stream.column();
-            if column_ids.contains(&column_id) {
+            if projected_data_type.contains_column_index(column_id as usize) {
                 let kind = stream.kind();
-                let data = Column::read_stream(reader, stream_offset, length)?;
+                let data = reader.get_bytes(stream_offset, length).context(IoSnafu)?;
                 stream_map.insert((column_id, kind), data);
             }
             stream_offset += length;
         }
 
-        let tz: Option<chrono_tz::Tz> = footer
+        let tz = footer
             .writer_timezone
             .as_ref()
             // TODO: make this return error
@@ -168,10 +172,10 @@ impl Stripe {
 
         Ok(Self {
             columns,
-            stream_map: Arc::new(StreamMap {
+            stream_map: StreamMap {
                 inner: stream_map,
-                compression,
-            }),
+                compression: file_metadata.compression(),
+            },
             number_of_rows: info.number_of_rows() as usize,
             tz,
         })
@@ -181,40 +185,49 @@ impl Stripe {
     #[cfg(feature = "async")]
     pub async fn new_async<R: crate::reader::AsyncChunkReader>(
         reader: &mut R,
-        file_metadata: &Arc<FileMetadata>,
+        file_metadata: &FileMetadata,
         projected_data_type: &RootDataType,
         info: &StripeMetadata,
     ) -> Result<Self> {
-        let compression = file_metadata.compression();
-
         let footer = reader
             .get_bytes(info.footer_offset(), info.footer_length())
             .await
             .context(IoSnafu)?;
-        let footer = Arc::new(deserialize_stripe_footer(footer, compression)?);
+        let footer = Arc::new(deserialize_stripe_footer(
+            footer,
+            file_metadata.compression(),
+        )?);
 
         let columns: Vec<Column> = projected_data_type
             .children()
             .iter()
-            .map(|col| Column::new(col.name(), col.data_type(), &footer))
+            .map(|col| {
+                Column::new(
+                    col.name().to_string(),
+                    col.data_type().clone(),
+                    footer.clone(),
+                )
+            })
             .collect();
-        let column_ids = collect_required_column_ids(&columns);
 
         let mut stream_map = HashMap::new();
         let mut stream_offset = info.offset();
         for stream in &footer.streams {
             let length = stream.length();
             let column_id = stream.column();
-            if column_ids.contains(&column_id) {
+            if projected_data_type.contains_column_index(column_id as usize) {
                 let kind = stream.kind();
-                let data = Column::read_stream_async(reader, stream_offset, length).await?;
+                let data = reader
+                    .get_bytes(stream_offset, length)
+                    .await
+                    .context(IoSnafu)?;
                 stream_map.insert((column_id, kind), data);
             }
 
             stream_offset += length;
         }
 
-        let tz: Option<chrono_tz::Tz> = footer
+        let tz = footer
             .writer_timezone
             .as_ref()
             // TODO: make this return error
@@ -222,10 +235,10 @@ impl Stripe {
 
         Ok(Self {
             columns,
-            stream_map: Arc::new(StreamMap {
+            stream_map: StreamMap {
                 inner: stream_map,
-                compression,
-            }),
+                compression: file_metadata.compression(),
+            },
             number_of_rows: info.number_of_rows() as usize,
             tz,
         })
@@ -235,7 +248,6 @@ impl Stripe {
         self.number_of_rows
     }
 
-    /// Fetch the stream map
     pub fn stream_map(&self) -> &StreamMap {
         &self.stream_map
     }
@@ -251,8 +263,9 @@ impl Stripe {
 
 #[derive(Debug)]
 pub struct StreamMap {
-    pub inner: HashMap<(u32, Kind), Bytes>,
-    pub compression: Option<Compression>,
+    /// <(ColumnId, Kind), Bytes>
+    inner: HashMap<(u32, Kind), Bytes>,
+    compression: Option<Compression>,
 }
 
 impl StreamMap {
@@ -284,13 +297,4 @@ fn deserialize_stripe_footer(
         .read_to_end(&mut buffer)
         .context(error::IoSnafu)?;
     StripeFooter::decode(buffer.as_slice()).context(error::DecodeProtoSnafu)
-}
-
-fn collect_required_column_ids(columns: &[Column]) -> HashSet<u32> {
-    let mut set = HashSet::new();
-    for column in columns {
-        set.insert(column.column_id());
-        set.extend(collect_required_column_ids(&column.children()));
-    }
-    set
 }

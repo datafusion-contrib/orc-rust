@@ -24,7 +24,7 @@ use arrow::datatypes::Decimal128Type;
 use snafu::ResultExt;
 
 use crate::encoding::decimal::UnboundedVarintStreamDecoder;
-use crate::encoding::integer::get_rle_reader;
+use crate::encoding::integer::get_signed_int_decoder;
 use crate::encoding::PrimitiveValueDecoder;
 use crate::error::ArrowSnafu;
 use crate::proto::stream::Kind;
@@ -38,13 +38,13 @@ pub fn new_decimal_decoder(
     stripe: &Stripe,
     precision: u32,
     fixed_scale: u32,
-) -> Result<Box<dyn ArrayBatchDecoder>> {
+) -> Box<dyn ArrayBatchDecoder> {
     let varint_iter = stripe.stream_map().get(column, Kind::Data);
     let varint_iter = Box::new(UnboundedVarintStreamDecoder::new(varint_iter));
 
     // Scale is specified on a per varint basis (in addition to being encoded in the type)
     let scale_iter = stripe.stream_map().get(column, Kind::Secondary);
-    let scale_iter = get_rle_reader::<i32, _>(column, scale_iter)?;
+    let scale_iter = get_signed_int_decoder::<i32>(scale_iter, column.rle_version());
 
     let present = PresentDecoder::from_stripe(stripe, column);
 
@@ -55,12 +55,12 @@ pub fn new_decimal_decoder(
     };
     let iter = Box::new(iter);
 
-    Ok(Box::new(DecimalArrayDecoder::new(
+    Box::new(DecimalArrayDecoder::new(
         precision as u8,
         fixed_scale as i8,
         iter,
         present,
-    )))
+    ))
 }
 
 /// Wrapper around PrimitiveArrayDecoder to allow specifying the precision and scale

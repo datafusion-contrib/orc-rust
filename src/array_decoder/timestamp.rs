@@ -21,7 +21,7 @@ use crate::{
     array_decoder::ArrowDataType,
     column::Column,
     encoding::{
-        integer::{get_rle_reader, get_unsigned_rle_reader},
+        integer::{get_signed_int_decoder, get_unsigned_int_decoder},
         timestamp::{TimestampDecoder, TimestampNanosecondAsDecimalDecoder},
         PrimitiveValueDecoder,
     },
@@ -54,12 +54,12 @@ fn get_inner_timestamp_decoder<T: ArrowTimestampType + Send>(
     column: &Column,
     stripe: &Stripe,
     seconds_since_unix_epoch: i64,
-) -> Result<PrimitiveArrayDecoder<T>> {
+) -> PrimitiveArrayDecoder<T> {
     let data = stripe.stream_map().get(column, Kind::Data);
-    let data = get_rle_reader(column, data)?;
+    let data = get_signed_int_decoder(data, column.rle_version());
 
     let secondary = stripe.stream_map().get(column, Kind::Secondary);
-    let secondary = get_unsigned_rle_reader(column, secondary);
+    let secondary = get_unsigned_int_decoder(secondary, column.rle_version());
 
     let present = PresentDecoder::from_stripe(stripe, column);
 
@@ -68,29 +68,29 @@ fn get_inner_timestamp_decoder<T: ArrowTimestampType + Send>(
         data,
         secondary,
     ));
-    Ok(PrimitiveArrayDecoder::<T>::new(iter, present))
+    PrimitiveArrayDecoder::<T>::new(iter, present)
 }
 
 fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
     column: &Column,
     stripe: &Stripe,
     seconds_since_unix_epoch: i64,
-) -> Result<Box<dyn ArrayBatchDecoder>> {
-    let inner = get_inner_timestamp_decoder::<T>(column, stripe, seconds_since_unix_epoch)?;
+) -> Box<dyn ArrayBatchDecoder> {
+    let inner = get_inner_timestamp_decoder::<T>(column, stripe, seconds_since_unix_epoch);
     match stripe.writer_tz() {
-        Some(writer_tz) => Ok(Box::new(TimestampOffsetArrayDecoder { inner, writer_tz })),
-        None => Ok(Box::new(inner)),
+        Some(writer_tz) => Box::new(TimestampOffsetArrayDecoder { inner, writer_tz }),
+        None => Box::new(inner),
     }
 }
 
 fn get_timestamp_instant_decoder<T: ArrowTimestampType + Send>(
     column: &Column,
     stripe: &Stripe,
-) -> Result<Box<dyn ArrayBatchDecoder>> {
+) -> Box<dyn ArrayBatchDecoder> {
     // TIMESTAMP_INSTANT is encoded as UTC so we don't check writer timezone in stripe
     let inner =
-        get_inner_timestamp_decoder::<T>(column, stripe, ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH)?;
-    Ok(Box::new(TimestampInstantArrayDecoder(inner)))
+        get_inner_timestamp_decoder::<T>(column, stripe, ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH);
+    Box::new(TimestampInstantArrayDecoder(inner))
 }
 
 fn decimal128_decoder(
@@ -98,12 +98,12 @@ fn decimal128_decoder(
     stripe: &Stripe,
     seconds_since_unix_epoch: i64,
     writer_tz: Option<Tz>,
-) -> Result<DecimalArrayDecoder> {
+) -> DecimalArrayDecoder {
     let data = stripe.stream_map().get(column, Kind::Data);
-    let data = get_rle_reader(column, data)?;
+    let data = get_signed_int_decoder(data, column.rle_version());
 
     let secondary = stripe.stream_map().get(column, Kind::Secondary);
-    let secondary = get_unsigned_rle_reader(column, secondary);
+    let secondary = get_unsigned_int_decoder(secondary, column.rle_version());
 
     let present = PresentDecoder::from_stripe(stripe, column);
 
@@ -114,12 +114,12 @@ fn decimal128_decoder(
         Some(writer_tz) => Box::new(TimestampNanosecondAsDecimalWithTzDecoder(iter, writer_tz)),
     };
 
-    Ok(DecimalArrayDecoder::new(
+    DecimalArrayDecoder::new(
         Decimal128Type::MAX_PRECISION,
         NANOSECOND_DIGITS,
         iter,
         present,
-    ))
+    )
 }
 
 /// Decodes a TIMESTAMP column stripe into batches of Timestamp{Nano,Micro,Milli,}secondArrays
@@ -148,28 +148,32 @@ pub fn new_timestamp_decoder(
 
     match field_type {
         ArrowDataType::Timestamp(TimeUnit::Second, None) => {
-            get_timestamp_decoder::<TimestampSecondType>(column, stripe, seconds_since_unix_epoch)
+            Ok(get_timestamp_decoder::<TimestampSecondType>(
+                column,
+                stripe,
+                seconds_since_unix_epoch,
+            ))
         }
         ArrowDataType::Timestamp(TimeUnit::Millisecond, None) => {
-            get_timestamp_decoder::<TimestampMillisecondType>(
+            Ok(get_timestamp_decoder::<TimestampMillisecondType>(
                 column,
                 stripe,
                 seconds_since_unix_epoch,
-            )
+            ))
         }
         ArrowDataType::Timestamp(TimeUnit::Microsecond, None) => {
-            get_timestamp_decoder::<TimestampMicrosecondType>(
+            Ok(get_timestamp_decoder::<TimestampMicrosecondType>(
                 column,
                 stripe,
                 seconds_since_unix_epoch,
-            )
+            ))
         }
         ArrowDataType::Timestamp(TimeUnit::Nanosecond, None) => {
-            get_timestamp_decoder::<TimestampNanosecondType>(
+            Ok(get_timestamp_decoder::<TimestampNanosecondType>(
                 column,
                 stripe,
                 seconds_since_unix_epoch,
-            )
+            ))
         }
         ArrowDataType::Decimal128(Decimal128Type::MAX_PRECISION, NANOSECOND_DIGITS) => {
             Ok(Box::new(decimal128_decoder(
@@ -177,7 +181,7 @@ pub fn new_timestamp_decoder(
                 stripe,
                 seconds_since_unix_epoch,
                 stripe.writer_tz(),
-            )?))
+            )))
         }
         _ => MismatchedSchemaSnafu {
             orc_type: column.data_type().clone(),
@@ -195,18 +199,18 @@ pub fn new_timestamp_instant_decoder(
     stripe: &Stripe,
 ) -> Result<Box<dyn ArrayBatchDecoder>> {
     match field_type {
-        ArrowDataType::Timestamp(TimeUnit::Second, Some(tz)) if tz.as_ref() == "UTC" => {
-            get_timestamp_instant_decoder::<TimestampSecondType>(column, stripe)
-        }
-        ArrowDataType::Timestamp(TimeUnit::Millisecond, Some(tz)) if tz.as_ref() == "UTC" => {
-            get_timestamp_instant_decoder::<TimestampMillisecondType>(column, stripe)
-        }
-        ArrowDataType::Timestamp(TimeUnit::Microsecond, Some(tz)) if tz.as_ref() == "UTC" => {
-            get_timestamp_instant_decoder::<TimestampMicrosecondType>(column, stripe)
-        }
-        ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some(tz)) if tz.as_ref() == "UTC" => {
-            get_timestamp_instant_decoder::<TimestampNanosecondType>(column, stripe)
-        }
+        ArrowDataType::Timestamp(TimeUnit::Second, Some(tz)) if tz.as_ref() == "UTC" => Ok(
+            get_timestamp_instant_decoder::<TimestampSecondType>(column, stripe),
+        ),
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, Some(tz)) if tz.as_ref() == "UTC" => Ok(
+            get_timestamp_instant_decoder::<TimestampMillisecondType>(column, stripe),
+        ),
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, Some(tz)) if tz.as_ref() == "UTC" => Ok(
+            get_timestamp_instant_decoder::<TimestampMicrosecondType>(column, stripe),
+        ),
+        ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some(tz)) if tz.as_ref() == "UTC" => Ok(
+            get_timestamp_instant_decoder::<TimestampNanosecondType>(column, stripe),
+        ),
         ArrowDataType::Timestamp(_, Some(_)) => UnsupportedTypeVariantSnafu {
             msg: "Non-UTC Arrow timestamps",
         }
@@ -217,7 +221,7 @@ pub fn new_timestamp_instant_decoder(
                 stripe,
                 ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH,
                 None,
-            )?))
+            )))
         }
         _ => MismatchedSchemaSnafu {
             orc_type: column.data_type().clone(),

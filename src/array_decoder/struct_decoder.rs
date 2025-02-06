@@ -43,8 +43,8 @@ impl StructArrayDecoder {
         let decoders = column
             .children()
             .iter()
-            .zip(fields.iter().cloned())
-            .map(|(child, field)| array_decoder_factory(child, field, stripe))
+            .zip(fields.iter())
+            .map(|(child, field)| array_decoder_factory(child, field.data_type(), stripe))
             .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
