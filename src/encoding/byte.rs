@@ -68,7 +68,6 @@ impl ByteRleEncoder {
             self.tail_run_length = 1;
         } else if let Some(run_value) = self.run_value {
             // Run mode
-
             if value == run_value {
                 // Continue buffering for Run sequence, flushing if reaching max length
                 self.num_literals += 1;
