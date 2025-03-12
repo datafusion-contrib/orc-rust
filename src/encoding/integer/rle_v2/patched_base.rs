@@ -256,10 +256,10 @@ pub fn write_patched_base(
     let encoded_patch_gap_width = patch_gap_width - 1;
 
     let header1 =
-        EncodingType::PatchedBase.to_header() | encoded_bit_width << 1 | encoded_length_high_bit;
+        EncodingType::PatchedBase.to_header() | (encoded_bit_width << 1) | encoded_length_high_bit;
     let header2 = encoded_length_low_bits;
-    let header3 = (encoded_base_width as u8) << 5 | encoded_patch_bits_width as u8;
-    let header4 = (encoded_patch_gap_width as u8) << 5 | patches.len() as u8;
+    let header3 = ((encoded_base_width as u8) << 5) | encoded_patch_bits_width as u8;
+    let header4 = ((encoded_patch_gap_width as u8) << 5) | patches.len() as u8;
     writer.put_slice(&[header1, header2, header3, header4]);
 
     // Write out base value as big endian bytes

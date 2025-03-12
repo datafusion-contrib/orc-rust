@@ -70,7 +70,7 @@ impl ArrayBatchDecoder for StructArrayDecoder {
             .map(|child| child.next_batch(batch_size, present.as_ref()))
             .collect::<Result<Vec<_>>>()?;
 
-        let null_buffer = present.map(NullBuffer::from);
+        let null_buffer = present;
         let array = StructArray::try_new(self.fields.clone(), child_arrays, null_buffer)
             .context(ArrowSnafu)?;
         let array = Arc::new(array);

@@ -78,7 +78,7 @@ impl ArrayBatchDecoder for ListArrayDecoder {
         // Fetch child array as one Array with total_length elements
         let child_array = self.inner.next_batch(total_length as usize, None)?;
         let offsets = OffsetBuffer::from_lengths(lengths.into_iter().map(|l| l as usize));
-        let null_buffer = present.map(NullBuffer::from);
+        let null_buffer = present;
 
         let array = ListArray::try_new(self.field.clone(), offsets, child_array, null_buffer)
             .context(ArrowSnafu)?;

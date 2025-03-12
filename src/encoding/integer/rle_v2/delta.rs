@@ -175,7 +175,7 @@ fn derive_delta_header(delta_width: usize, run_length: usize) -> [u8; 2] {
     let encoded_length_high_bit = (run_length >> 8) as u8;
     let encoded_length_low_bits = (run_length & 0xFF) as u8;
 
-    let header1 = EncodingType::Delta.to_header() | delta_width << 1 | encoded_length_high_bit;
+    let header1 = EncodingType::Delta.to_header() | (delta_width << 1) | encoded_length_high_bit;
     let header2 = encoded_length_low_bits;
 
     [header1, header2]
