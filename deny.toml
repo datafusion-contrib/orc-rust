@@ -23,8 +23,6 @@ allow = [
   "BSD-2-Clause",
   "BSD-3-Clause",
   "CC0-1.0",
-]
-exceptions = [
-  { allow = ["Unicode-DFS-2016"], name = "unicode-ident" },
+  "Unicode-3.0",
 ]
 version = 2
