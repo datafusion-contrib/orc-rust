@@ -31,11 +31,7 @@ use util::{
     get_closest_aligned_bit_width, signed_msb_decode, signed_zigzag_decode, signed_zigzag_encode,
 };
 
-use crate::{
-    column::Column,
-    error::{InvalidColumnEncodingSnafu, IoSnafu, Result},
-    proto::column_encoding::Kind as ProtoColumnKind,
-};
+use crate::error::{IoSnafu, Result};
 
 use super::PrimitiveValueDecoder;
 
@@ -46,34 +42,29 @@ mod util;
 // TODO: consider having a separate varint.rs
 pub use util::read_varint_zigzagged;
 
-pub fn get_unsigned_rle_reader<R: Read + Send + 'static>(
-    column: &Column,
-    reader: R,
-) -> Box<dyn PrimitiveValueDecoder<i64> + Send> {
-    match column.encoding().kind() {
-        ProtoColumnKind::Direct | ProtoColumnKind::Dictionary => {
-            Box::new(RleV1Decoder::<i64, _, UnsignedEncoding>::new(reader))
-        }
-        ProtoColumnKind::DirectV2 | ProtoColumnKind::DictionaryV2 => {
-            Box::new(RleV2Decoder::<i64, _, UnsignedEncoding>::new(reader))
-        }
+#[derive(Debug, Clone, Copy)]
+pub enum RleVersion {
+    V1,
+    V2,
+}
+
+pub fn get_signed_int_decoder<N: NInt>(
+    reader: impl Read + Send + 'static,
+    rle_version: RleVersion,
+) -> Box<dyn PrimitiveValueDecoder<N> + Send> {
+    match rle_version {
+        RleVersion::V1 => Box::new(RleV1Decoder::<N, _, SignedEncoding>::new(reader)),
+        RleVersion::V2 => Box::new(RleV2Decoder::<N, _, SignedEncoding>::new(reader)),
     }
 }
 
-pub fn get_rle_reader<N: NInt, R: Read + Send + 'static>(
-    column: &Column,
-    reader: R,
-) -> Result<Box<dyn PrimitiveValueDecoder<N> + Send>> {
-    match column.encoding().kind() {
-        ProtoColumnKind::Direct => Ok(Box::new(RleV1Decoder::<N, _, SignedEncoding>::new(reader))),
-        ProtoColumnKind::DirectV2 => {
-            Ok(Box::new(RleV2Decoder::<N, _, SignedEncoding>::new(reader)))
-        }
-        k => InvalidColumnEncodingSnafu {
-            name: column.name(),
-            encoding: k,
-        }
-        .fail(),
+pub fn get_unsigned_int_decoder<N: NInt>(
+    reader: impl Read + Send + 'static,
+    rle_version: RleVersion,
+) -> Box<dyn PrimitiveValueDecoder<N> + Send> {
+    match rle_version {
+        RleVersion::V1 => Box::new(RleV1Decoder::<N, _, UnsignedEncoding>::new(reader)),
+        RleVersion::V2 => Box::new(RleV2Decoder::<N, _, UnsignedEncoding>::new(reader)),
     }
 }
 
@@ -219,10 +210,9 @@ impl VarintSerde for i128 {
     }
 }
 
-// We only implement for i16, i32, i64 and u64.
+// We only implement for i16, i32 and i64.
 // ORC supports only signed Short, Integer and Long types for its integer types,
-// and i8 is encoded as bytes. u64 is used for other encodings such as Strings
-// (to encode length, etc.).
+// and i8 is encoded as bytes.
 
 impl NInt for i16 {
     type Bytes = [u8; 2];

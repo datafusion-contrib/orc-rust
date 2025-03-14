@@ -24,7 +24,7 @@ use snafu::ResultExt;
 
 use crate::array_decoder::derive_present_vec;
 use crate::column::Column;
-use crate::encoding::integer::get_unsigned_rle_reader;
+use crate::encoding::integer::get_unsigned_int_decoder;
 use crate::encoding::PrimitiveValueDecoder;
 use crate::error::{ArrowSnafu, Result};
 use crate::proto::stream::Kind;
@@ -50,13 +50,13 @@ impl MapArrayDecoder {
         let present = PresentDecoder::from_stripe(stripe, column);
 
         let keys_column = &column.children()[0];
-        let keys = array_decoder_factory(keys_column, keys_field.clone(), stripe)?;
+        let keys = array_decoder_factory(keys_column, keys_field.data_type(), stripe)?;
 
         let values_column = &column.children()[1];
-        let values = array_decoder_factory(values_column, values_field.clone(), stripe)?;
+        let values = array_decoder_factory(values_column, values_field.data_type(), stripe)?;
 
         let reader = stripe.stream_map().get(column, Kind::Length);
-        let lengths = get_unsigned_rle_reader(column, reader);
+        let lengths = get_unsigned_int_decoder(reader, column.rle_version());
 
         let fields = Fields::from(vec![keys_field, values_field]);
 

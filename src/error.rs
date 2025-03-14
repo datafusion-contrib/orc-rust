@@ -23,7 +23,6 @@ use arrow::error::ArrowError;
 use snafu::prelude::*;
 use snafu::Location;
 
-use crate::proto;
 use crate::schema::DataType;
 
 // TODO: consolidate error types? better to have a smaller set?
@@ -101,14 +100,6 @@ pub enum OrcError {
         location: Location,
         orc_type: DataType,
         arrow_type: ArrowDataType,
-    },
-
-    #[snafu(display("Invalid encoding for column '{}': {:?}", name, encoding))]
-    InvalidColumnEncoding {
-        #[snafu(implicit)]
-        location: Location,
-        name: String,
-        encoding: proto::column_encoding::Kind,
     },
 
     #[snafu(display("Failed to convert to record batch: {}", source))]

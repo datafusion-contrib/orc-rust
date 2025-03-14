@@ -17,12 +17,8 @@
 
 use std::sync::Arc;
 
-use bytes::Bytes;
-use snafu::ResultExt;
-
-use crate::error::{IoSnafu, Result};
-use crate::proto::{ColumnEncoding, StripeFooter};
-use crate::reader::ChunkReader;
+use crate::encoding::integer::RleVersion;
+use crate::proto::{column_encoding::Kind as ProtoColumnKind, ColumnEncoding, StripeFooter};
 use crate::schema::DataType;
 
 #[derive(Clone, Debug)]
@@ -33,11 +29,11 @@ pub struct Column {
 }
 
 impl Column {
-    pub fn new(name: &str, data_type: &DataType, footer: &Arc<StripeFooter>) -> Self {
+    pub fn new(name: String, data_type: DataType, footer: Arc<StripeFooter>) -> Self {
         Self {
-            footer: footer.clone(),
-            data_type: data_type.clone(),
-            name: name.to_string(),
+            footer,
+            data_type,
+            name,
         }
     }
 
@@ -51,6 +47,15 @@ impl Column {
     pub fn encoding(&self) -> ColumnEncoding {
         let column = self.data_type.column_index();
         self.footer.columns[column].clone()
+    }
+
+    pub fn rle_version(&self) -> RleVersion {
+        // TODO: Validity check for this? e.g. ensure INT column isn't dictionary encoded.
+        //       Or maybe check that at init time; to ensure we catch at earliest opportunity?
+        match self.encoding().kind() {
+            ProtoColumnKind::Direct | ProtoColumnKind::Dictionary => RleVersion::V1,
+            ProtoColumnKind::DirectV2 | ProtoColumnKind::DictionaryV2 => RleVersion::V2,
+        }
     }
 
     pub fn data_type(&self) -> &DataType {
@@ -124,18 +129,5 @@ impl Column {
                     .collect()
             }
         }
-    }
-
-    pub fn read_stream<R: ChunkReader>(reader: &mut R, start: u64, length: u64) -> Result<Bytes> {
-        reader.get_bytes(start, length).context(IoSnafu)
-    }
-
-    #[cfg(feature = "async")]
-    pub async fn read_stream_async<R: crate::reader::AsyncChunkReader>(
-        reader: &mut R,
-        start: u64,
-        length: u64,
-    ) -> Result<Bytes> {
-        reader.get_bytes(start, length).await.context(IoSnafu)
     }
 }

@@ -33,10 +33,7 @@ mod util;
 
 /// Encodes primitive values into an internal buffer, usually with a specialized run length
 /// encoding for better compression.
-pub trait PrimitiveValueEncoder<V>: EstimateMemory
-where
-    V: Copy,
-{
+pub trait PrimitiveValueEncoder<V: Copy>: EstimateMemory {
     fn new() -> Self;
 
     fn write_one(&mut self, value: V);

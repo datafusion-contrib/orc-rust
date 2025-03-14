@@ -21,7 +21,7 @@ use arrow::array::{ArrayRef, BooleanArray, BooleanBufferBuilder, PrimitiveArray}
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::ArrowNativeTypeOp;
 use arrow::datatypes::ArrowPrimitiveType;
-use arrow::datatypes::{DataType as ArrowDataType, Field};
+use arrow::datatypes::DataType as ArrowDataType;
 use arrow::datatypes::{
     Date32Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, SchemaRef,
 };
@@ -32,7 +32,7 @@ use crate::column::Column;
 use crate::encoding::boolean::BooleanDecoder;
 use crate::encoding::byte::ByteRleDecoder;
 use crate::encoding::float::FloatDecoder;
-use crate::encoding::integer::get_rle_reader;
+use crate::encoding::integer::get_signed_int_decoder;
 use crate::encoding::PrimitiveValueDecoder;
 use crate::error::{
     self, MismatchedSchemaSnafu, Result, UnexpectedSnafu, UnsupportedTypeVariantSnafu,
@@ -258,10 +258,10 @@ impl Iterator for NaiveStripeDecoder {
 
 pub fn array_decoder_factory(
     column: &Column,
-    field: Arc<Field>,
+    hinted_arrow_type: &ArrowDataType,
     stripe: &Stripe,
 ) -> Result<Box<dyn ArrayBatchDecoder>> {
-    let decoder: Box<dyn ArrayBatchDecoder> = match (column.data_type(), field.data_type()) {
+    let decoder: Box<dyn ArrayBatchDecoder> = match (column.data_type(), hinted_arrow_type) {
         // TODO: try make branches more generic, reduce duplication
         (DataType::Boolean { .. }, ArrowDataType::Boolean) => {
             let iter = stripe.stream_map().get(column, Kind::Data);
@@ -277,19 +277,19 @@ pub fn array_decoder_factory(
         }
         (DataType::Short { .. }, ArrowDataType::Int16) => {
             let iter = stripe.stream_map().get(column, Kind::Data);
-            let iter = get_rle_reader(column, iter)?;
+            let iter = get_signed_int_decoder(iter, column.rle_version());
             let present = PresentDecoder::from_stripe(stripe, column);
             Box::new(Int16ArrayDecoder::new(iter, present))
         }
         (DataType::Int { .. }, ArrowDataType::Int32) => {
             let iter = stripe.stream_map().get(column, Kind::Data);
-            let iter = get_rle_reader(column, iter)?;
+            let iter = get_signed_int_decoder(iter, column.rle_version());
             let present = PresentDecoder::from_stripe(stripe, column);
             Box::new(Int32ArrayDecoder::new(iter, present))
         }
         (DataType::Long { .. }, ArrowDataType::Int64) => {
             let iter = stripe.stream_map().get(column, Kind::Data);
-            let iter = get_rle_reader(column, iter)?;
+            let iter = get_signed_int_decoder(iter, column.rle_version());
             let present = PresentDecoder::from_stripe(stripe, column);
             Box::new(Int64ArrayDecoder::new(iter, present))
         }
@@ -315,7 +315,7 @@ pub fn array_decoder_factory(
             },
             ArrowDataType::Decimal128(a_precision, a_scale),
         ) if *precision as u8 == *a_precision && *scale as i8 == *a_scale => {
-            new_decimal_decoder(column, stripe, *precision, *scale)?
+            new_decimal_decoder(column, stripe, *precision, *scale)
         }
         (DataType::Timestamp { .. }, field_type) => {
             new_timestamp_decoder(column, field_type.clone(), stripe)?
@@ -326,7 +326,7 @@ pub fn array_decoder_factory(
         (DataType::Date { .. }, ArrowDataType::Date32) => {
             // TODO: allow Date64
             let iter = stripe.stream_map().get(column, Kind::Data);
-            let iter = get_rle_reader(column, iter)?;
+            let iter = get_signed_int_decoder(iter, column.rle_version());
             let present = PresentDecoder::from_stripe(stripe, column);
             Box::new(DateArrayDecoder::new(iter, present))
         }
@@ -433,17 +433,13 @@ impl NaiveStripeDecoder {
     }
 
     pub fn new(stripe: Stripe, schema_ref: SchemaRef, batch_size: usize) -> Result<Self> {
-        let mut decoders = Vec::with_capacity(stripe.columns().len());
         let number_of_rows = stripe.number_of_rows();
-
-        for (col, field) in stripe
+        let decoders = stripe
             .columns()
             .iter()
-            .zip(schema_ref.fields.iter().cloned())
-        {
-            let decoder = array_decoder_factory(col, field, &stripe)?;
-            decoders.push(decoder);
-        }
+            .zip(schema_ref.fields.iter())
+            .map(|(col, field)| array_decoder_factory(col, field.data_type(), &stripe))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             stripe,
