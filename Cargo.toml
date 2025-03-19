@@ -32,7 +32,7 @@ rust-version = "1.73"
 all-features = true
 
 [dependencies]
-arrow = { version = "53.1.0", features = ["prettyprint", "chrono-tz"] }
+arrow = { version = ">= 53.1.0, < 55.0.0", features = ["prettyprint", "chrono-tz", "ipc_compression"] }
 bytemuck = { version = "1.18.0", features = ["must_cast"] }
 bytes = "1.4"
 chrono = { version = ">= 0.4.37, < 0.4.40", default-features = false, features = ["std"] }
