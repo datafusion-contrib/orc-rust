@@ -35,7 +35,7 @@ all-features = true
 arrow = { version = ">= 53.1.0", features = ["prettyprint", "chrono-tz", "ipc_compression"] }
 bytemuck = { version = "1.22.0", features = ["must_cast"] }
 bytes = "1.10.1"
-chrono = { version = "0.4.40", default-features = false, features = ["std"] }
+chrono = { version = ">= 0.4.37", default-features = false, features = ["std"] }
 chrono-tz = "0.10"
 fallible-streaming-iterator = "0.1"
 flate2 = "1"
