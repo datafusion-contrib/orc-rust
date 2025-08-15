@@ -145,6 +145,20 @@ pub struct ColumnStatistics {
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RowIndexEntry {
+    #[prost(uint64, repeated, tag = "1")]
+    pub positions: ::prost::alloc::vec::Vec<u64>,
+    #[prost(message, optional, tag = "2")]
+    pub statistics: ::core::option::Option<ColumnStatistics>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RowIndex {
+    #[prost(message, repeated, tag = "1")]
+    pub entry: ::prost::alloc::vec::Vec<RowIndexEntry>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BloomFilter {
     #[prost(uint32, optional, tag = "1")]
     pub num_hash_functions: ::core::option::Option<u32>,
@@ -152,6 +166,12 @@ pub struct BloomFilter {
     pub bitset: ::prost::alloc::vec::Vec<u64>,
     #[prost(bytes = "vec", optional, tag = "3")]
     pub utf8bitset: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BloomFilterIndex {
+    #[prost(message, repeated, tag = "1")]
+    pub bloom_filter: ::prost::alloc::vec::Vec<BloomFilter>,
 }
 #[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -478,6 +498,21 @@ pub struct StripeStatistics {
 pub struct Metadata {
     #[prost(message, repeated, tag = "1")]
     pub stripe_stats: ::prost::alloc::vec::Vec<StripeStatistics>,
+}
+/// In ORC v2 (and for encrypted columns in v1), each column has
+/// their column statistics written separately.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ColumnarStripeStatistics {
+    /// one value for each stripe in the file
+    #[prost(message, repeated, tag = "1")]
+    pub col_stats: ::prost::alloc::vec::Vec<ColumnStatistics>,
+}
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileStatistics {
+    #[prost(message, repeated, tag = "1")]
+    pub column: ::prost::alloc::vec::Vec<ColumnStatistics>,
 }
 /// How was the data masked? This isn't necessary for reading the file, but
 /// is documentation about how the file was written.
