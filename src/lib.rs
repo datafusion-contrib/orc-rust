@@ -53,10 +53,12 @@ pub mod arrow_writer;
 pub mod async_arrow_reader;
 mod column;
 pub mod compression;
+#[allow(dead_code)]
 mod encoding;
 pub mod error;
 mod memory;
 pub mod projection;
+#[allow(dead_code)]
 mod proto;
 pub mod reader;
 pub mod schema;

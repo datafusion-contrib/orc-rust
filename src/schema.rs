@@ -133,8 +133,7 @@ fn parse_struct_children_from_proto(
         ty.subtypes.len() == ty.field_names.len(),
         UnexpectedSnafu {
             msg: format!(
-                "Struct type for column index {} must have matching lengths for subtypes and field names lists",
-                column_index,
+                "Struct type for column index {column_index} must have matching lengths for subtypes and field names lists"
             )
         }
     );

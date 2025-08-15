@@ -350,7 +350,7 @@ mod tests {
         )
         .unwrap();
 
-        let rows = roundtrip(&[batch.clone()]);
+        let rows = roundtrip(std::slice::from_ref(&batch));
         assert_eq!(batch, rows[0]);
     }
 
