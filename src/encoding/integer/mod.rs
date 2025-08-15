@@ -39,7 +39,6 @@ use crate::{
 
 use super::PrimitiveValueDecoder;
 
-#[allow(unused)]
 pub mod rle_v1;
 pub mod rle_v2;
 mod util;
