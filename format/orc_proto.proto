@@ -100,12 +100,24 @@ message ColumnStatistics {
   optional CollectionStatistics collectionStatistics = 12;
 }
 
+message RowIndexEntry {
+  repeated uint64 positions = 1 [packed=true];
+  optional ColumnStatistics statistics = 2;
+}
+
+message RowIndex {
+  repeated RowIndexEntry entry = 1;
+}
+
 message BloomFilter {
   optional uint32 numHashFunctions = 1;
   repeated fixed64 bitset = 2;
   optional bytes utf8bitset = 3;
 }
 
+message BloomFilterIndex {
+  repeated BloomFilter bloomFilter = 1;
+}
 
 message Stream {
   // if you add new index stream kinds, you need to make sure to update
@@ -258,10 +270,21 @@ message Metadata {
   repeated StripeStatistics stripeStats = 1;
 }
 
+// In ORC v2 (and for encrypted columns in v1), each column has
+// their column statistics written separately.
+message ColumnarStripeStatistics {
+  // one value for each stripe in the file
+  repeated ColumnStatistics colStats = 1;
+}
+
 enum EncryptionAlgorithm {
   UNKNOWN_ENCRYPTION = 0;  // used for detecting future algorithms
   AES_CTR_128 = 1;
   AES_CTR_256 = 2;
+}
+
+message FileStatistics {
+  repeated ColumnStatistics column = 1;
 }
 
 // How was the data masked? This isn't necessary for reading the file, but
