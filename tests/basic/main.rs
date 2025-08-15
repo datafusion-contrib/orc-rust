@@ -77,7 +77,7 @@ fn new_arrow_reader_range(path: &str, range: Range<usize>) -> ArrowReader<File> 
 
 fn basic_path(path: &str) -> String {
     let dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/basic/data/{}", dir, path)
+    format!("{dir}/tests/basic/data/{path}")
 }
 
 #[test]
@@ -617,7 +617,7 @@ pub fn decimal128_timestamps_test() {
 
 fn integration_path(path: &str) -> String {
     let dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/integration/data/{}", dir, path)
+    format!("{dir}/tests/integration/data/{path}")
 }
 
 // TODO: Move this to integration test file. Placed here because it has access to assert_batches_eq.
@@ -661,7 +661,6 @@ pub fn assert_batches_eq(batches: &[RecordBatch], expected_lines: &[&str]) {
     let actual_lines: Vec<_> = formatted.trim().lines().collect();
     assert_eq!(
         &actual_lines, expected_lines,
-        "\n\nexpected:\n\n{:#?}\nactual:\n\n{:#?}\n\n",
-        expected_lines, actual_lines
+        "\n\nexpected:\n\n{expected_lines:#?}\nactual:\n\n{actual_lines:#?}\n\n"
     );
 }

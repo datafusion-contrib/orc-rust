@@ -23,7 +23,7 @@ use orc_rust::arrow_reader::ArrowReaderBuilder;
 
 fn basic_path(path: &str) -> String {
     let dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/tests/basic/data/{}", dir, path)
+    format!("{dir}/tests/basic/data/{path}")
 }
 
 // demo-12-zlib.orc
