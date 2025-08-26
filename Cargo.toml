@@ -64,9 +64,9 @@ tokio = { version = "1.28", optional = true, features = [
 anyhow = { version = "1.0", optional = true }
 clap = { version = "4.5.4", features = ["derive"], optional = true }
 
+iana-time-zone = "0.1.63"
 # opendal
 opendal = { version = "0.53", optional = true, default-features = false }
-iana-time-zone = "0.1.63"
 
 [dev-dependencies]
 arrow-ipc = { version = "56.0", features = ["lz4"] }
