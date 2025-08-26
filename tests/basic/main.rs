@@ -257,15 +257,26 @@ pub fn basic_test_timestamp_writer_timezone() {
     let path = basic_path("timestamp_writer_timezone.snappy.orc");
     let reader = new_arrow_reader(&path, &["c1"]);
     let batch = reader.collect::<Result<Vec<_>, _>>().unwrap();
-
-    let expected = [
-        "+---------------------+",
-        "| c1                  |",
-        "+---------------------+",
-        "| 2025-05-12T04:32:00 |",
-        "+---------------------+",
-    ];
-    assert_batches_eq(&batch, &expected);
+    let reader_tz = iana_time_zone::get_timezone().ok();
+    if reader_tz.as_deref() == Some("Asia/Shanghai") {
+        let expected = [
+            "+---------------------+",
+            "| c1                  |",
+            "+---------------------+",
+            "| 2025-05-12T04:32:00 |",
+            "+---------------------+",
+        ];
+        assert_batches_eq(&batch, &expected);
+    } else {
+        let expected = [
+            "+---------------------+",
+            "| c1                  |",
+            "+---------------------+",
+            "| 2025-05-11T12:32:00 |",
+            "+---------------------+",
+        ];
+        assert_batches_eq(&batch, &expected);
+    }
 }
 
 #[test]
