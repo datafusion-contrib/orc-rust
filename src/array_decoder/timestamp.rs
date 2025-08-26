@@ -80,11 +80,7 @@ fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
     match stripe.writer_tz() {
         Some(writer_tz) => {
             let reader_tz = iana_time_zone::get_timezone().ok();
-            let has_same_tz_rules = if reader_tz == Some(writer_tz.name().to_string()) {
-                true
-            } else {
-                false
-            };
+            let has_same_tz_rules = reader_tz == Some(writer_tz.name().to_string());
             Box::new(TimestampOffsetArrayDecoder {
                 inner,
                 writer_tz,
