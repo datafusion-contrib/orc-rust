@@ -29,3 +29,5 @@ private/
 /perf.*
 /flamegraph.svg
 
+.DS_Store
+

@@ -66,6 +66,7 @@ clap = { version = "4.5.4", features = ["derive"], optional = true }
 
 # opendal
 opendal = { version = "0.53", optional = true, default-features = false }
+iana-time-zone = "0.1.63"
 
 [dev-dependencies]
 arrow-ipc = { version = "56.0", features = ["lz4"] }

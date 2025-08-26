@@ -253,6 +253,22 @@ pub fn basic_test_3() {
 }
 
 #[test]
+pub fn basic_test_timestamp_writer_timezone() {
+    let path = basic_path("timestamp_writer_timezone.snappy.orc");
+    let reader = new_arrow_reader(&path, &["c1"]);
+    let batch = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+    let expected = [
+        "+---------------------+",
+        "| c1                  |",
+        "+---------------------+",
+        "| 2025-05-12T04:32:00 |",
+        "+---------------------+",
+    ];
+    assert_batches_eq(&batch, &expected);
+}
+
+#[test]
 pub fn basic_test_nested_struct() {
     let path = basic_path("nested_struct.orc");
     let reader = new_arrow_reader_root(&path);
