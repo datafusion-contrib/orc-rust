@@ -80,13 +80,17 @@ fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
     match stripe.writer_tz() {
         Some(writer_tz) => {
             let reader_tz = iana_time_zone::get_timezone().ok();
+            let has_same_tz_rules = if reader_tz == Some(writer_tz.name().to_string()) {
+                true
+            } else {
+                false
+            };
             Box::new(TimestampOffsetArrayDecoder {
                 inner,
                 writer_tz,
-                reader_tz_str: reader_tz,
-                writer_tz_str: Some(writer_tz.name().to_string())
+                has_same_tz_rules,
             })
-        },
+        }
         None => Box::new(inner),
     }
 }
@@ -244,8 +248,7 @@ pub fn new_timestamp_instant_decoder(
 struct TimestampOffsetArrayDecoder<T: ArrowTimestampType> {
     inner: PrimitiveArrayDecoder<T>,
     writer_tz: chrono_tz::Tz,
-    reader_tz_str: Option<String>,
-    writer_tz_str: Option<String>,
+    has_same_tz_rules: bool,
 }
 
 impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampOffsetArrayDecoder<T> {
@@ -262,7 +265,7 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampOffsetArrayDecoder<T>
             // Convert from writer timezone to reader timezone (which we default to UTC)
             // TODO: more efficient way of doing this?
 
-            if self.reader_tz_str == self.writer_tz_str {
+            if self.has_same_tz_rules {
                 return Some(ts);
             }
             self.writer_tz
