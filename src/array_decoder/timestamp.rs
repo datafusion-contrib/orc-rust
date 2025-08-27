@@ -79,11 +79,15 @@ fn get_timestamp_decoder<T: ArrowTimestampType + Send>(
     let inner = get_inner_timestamp_decoder::<T>(column, stripe, seconds_since_unix_epoch);
     match stripe.writer_tz() {
         Some(writer_tz) => {
-            let reader_tz = iana_time_zone::get_timezone().ok();
-            let has_same_tz_rules = reader_tz == Some(writer_tz.name().to_string());
+            // Get reader timezone, default to UTC if not available
+            let reader_tz_name =
+                iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
+            let reader_tz = reader_tz_name.parse::<chrono_tz::Tz>().unwrap_or(UTC);
+            let has_same_tz_rules = writer_tz == reader_tz;
             Box::new(TimestampOffsetArrayDecoder {
                 inner,
                 writer_tz,
+                reader_tz,
                 has_same_tz_rules,
             })
         }
@@ -240,10 +244,11 @@ pub fn new_timestamp_instant_decoder(
 }
 
 /// Wrapper around PrimitiveArrayDecoder to decode timestamps which are encoded in
-/// timezone of the writer to their UTC value.
+/// timezone of the writer to reader timezone.
 struct TimestampOffsetArrayDecoder<T: ArrowTimestampType> {
     inner: PrimitiveArrayDecoder<T>,
     writer_tz: chrono_tz::Tz,
+    reader_tz: chrono_tz::Tz,
     has_same_tz_rules: bool,
 }
 
@@ -264,11 +269,26 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampOffsetArrayDecoder<T>
             if self.has_same_tz_rules {
                 return Some(ts);
             }
+
+            // Convert timestamp from writer timezone to reader timezone
+            // 1. Interpret the timestamp as being in the writer timezone
+            // 2. Convert to UTC
+            // 3. Convert to reader timezone
+            // 4. Get the timestamp in nanoseconds
+            // self.writer_tz
+            //     .timestamp_nanos(ts)
+            //     .naive_local()
+            //     .and_utc()
+            //     .with_timezone(&self.reader_tz)
+            //     .timestamp_nanos_opt()
             self.writer_tz
                 .timestamp_nanos(ts)
                 .naive_local()
                 .and_utc()
-                .timestamp_nanos_opt()
+                .naive_local()
+                .and_local_timezone(self.reader_tz)
+                .single()
+                .and_then(|dt_in_reader_tz| dt_in_reader_tz.timestamp_nanos_opt())
         };
         let array = array
             // first try to convert all non-nullable batches to non-nullable batches
