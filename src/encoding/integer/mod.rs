@@ -234,12 +234,12 @@ impl NInt for i16 {
 
     #[inline]
     fn add_i64(self, i: i64) -> Option<Self> {
-        i.try_into().ok().and_then(|i| self.checked_add(i))
+        self.as_i64().checked_add(i).and_then(|v| v.try_into().ok())
     }
 
     #[inline]
     fn sub_i64(self, i: i64) -> Option<Self> {
-        i.try_into().ok().and_then(|i| self.checked_sub(i))
+        self.as_i64().checked_sub(i).and_then(|v| v.try_into().ok())
     }
 
     #[inline]
@@ -268,12 +268,12 @@ impl NInt for i32 {
 
     #[inline]
     fn add_i64(self, i: i64) -> Option<Self> {
-        i.try_into().ok().and_then(|i| self.checked_add(i))
+        self.as_i64().checked_add(i).and_then(|v| v.try_into().ok())
     }
 
     #[inline]
     fn sub_i64(self, i: i64) -> Option<Self> {
-        i.try_into().ok().and_then(|i| self.checked_sub(i))
+        self.as_i64().checked_sub(i).and_then(|v| v.try_into().ok())
     }
 
     #[inline]
