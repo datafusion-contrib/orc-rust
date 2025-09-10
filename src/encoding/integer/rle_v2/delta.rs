@@ -299,4 +299,17 @@ mod tests {
         let sub_result = v.sub_i64(i);
         assert_eq!(sub_result, Some(959047768));
     }
+
+    #[test]
+    fn test_i16_add_sub_i64() {
+        let v = i16::MIN;
+        let i = (i16::MAX as i64) * 2;
+        let add_result = v.add_i64(i);
+        assert_eq!(add_result, Some(32766i16));
+
+        let v = i16::MIN;
+        let i = -(i16::MAX as i64) * 2;
+        let sub_result = v.sub_i64(i);
+        assert_eq!(sub_result, Some(32766i16));
+    }
 }
