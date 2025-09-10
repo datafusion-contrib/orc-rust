@@ -289,15 +289,15 @@ mod tests {
 
     #[test]
     fn test_i32_add_sub_i64() {
-        let v = -1322366118i32;
-        let i = 2281413886i64;
+        let v = i32::MIN;
+        let i = (i32::MAX as i64) * 2;
         let add_result = v.add_i64(i);
-        assert_eq!(add_result, Some(959047768));
+        assert_eq!(add_result, Some(2147483646));
 
-        let v = -1322366118i32;
-        let i = -2281413886i64;
+        let v = i32::MIN;
+        let i = -(i32::MAX as i64) * 2;
         let sub_result = v.sub_i64(i);
-        assert_eq!(sub_result, Some(959047768));
+        assert_eq!(sub_result, Some(2147483646));
     }
 
     #[test]
