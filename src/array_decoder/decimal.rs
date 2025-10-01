@@ -101,6 +101,10 @@ impl ArrayBatchDecoder for DecimalArrayDecoder {
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        self.inner.skip_records(num_records)
+    }
 }
 
 /// This iter fixes the scales of the varints decoded as scale is specified on a per

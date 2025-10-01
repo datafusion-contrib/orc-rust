@@ -55,7 +55,7 @@ pub trait GenericRle<V: Copy> {
     fn decode_batch(&mut self) -> Result<()>;
 }
 
-impl<V: Copy, G: GenericRle<V> + sealed::Rle> PrimitiveValueDecoder<V> for G {
+impl<V: Copy + Default, G: GenericRle<V> + sealed::Rle> PrimitiveValueDecoder<V> for G {
     fn decode(&mut self, out: &mut [V]) -> Result<()> {
         let available = self.available();
         // If we have enough leftover to copy, can skip decoding more.

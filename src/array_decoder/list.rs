@@ -85,4 +85,15 @@ impl ArrayBatchDecoder for ListArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // For list arrays, we need to skip both the lengths and the child elements
+        // First skip the lengths
+        let mut lengths = vec![0; num_records];
+        self.lengths.decode(&mut lengths)?;
+        let total_length: i64 = lengths.iter().sum();
+
+        // Then skip the child elements
+        self.inner.skip_records(total_length as usize)
+    }
 }

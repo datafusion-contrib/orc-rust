@@ -50,7 +50,16 @@ pub trait PrimitiveValueEncoder<V: Copy>: EstimateMemory {
     fn take_inner(&mut self) -> Bytes;
 }
 
-pub trait PrimitiveValueDecoder<V> {
+pub trait PrimitiveValueDecoder<V: Default + Clone> {
+    /// Skip `num_records` values without decoding them into a buffer.
+    /// Fail if it cannot skip the number of records.
+    fn skip(&mut self, num_records: usize) -> Result<()> {
+        // default implementation is to skip the number of records
+        // TODO: impl this for all decoders to be more efficient
+        let mut tmp = vec![V::default(); num_records];
+        self.decode(&mut tmp)
+    }
+
     /// Decode out.len() values into out at a time, failing if it cannot fill
     /// the buffer.
     fn decode(&mut self, out: &mut [V]) -> Result<()>;

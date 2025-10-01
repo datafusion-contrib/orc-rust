@@ -155,6 +155,22 @@ impl<T: ByteArrayType> ArrayBatchDecoder for GenericByteArrayDecoder<T> {
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // For string arrays, we need to skip both the lengths and the actual bytes
+        // First skip the lengths
+        let mut lengths = vec![0; num_records];
+        self.lengths.decode(&mut lengths)?;
+        let total_length: i64 = lengths.iter().sum();
+
+        // Then skip the actual bytes
+        let mut bytes = vec![0u8; total_length as usize];
+        self.bytes
+            .read_exact(&mut bytes)
+            .context(crate::error::IoSnafu)?;
+
+        Ok(num_records)
+    }
 }
 
 pub struct DictionaryStringArrayDecoder {
@@ -191,5 +207,10 @@ impl ArrayBatchDecoder for DictionaryStringArrayDecoder {
 
         let array = Arc::new(array);
         Ok(array)
+    }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // For dictionary string arrays, we just need to skip the indexes
+        self.indexes.skip_records(num_records)
     }
 }

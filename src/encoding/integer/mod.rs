@@ -48,7 +48,7 @@ pub enum RleVersion {
     V2,
 }
 
-pub fn get_signed_int_decoder<N: NInt>(
+pub fn get_signed_int_decoder<N: NInt + Default>(
     reader: impl Read + Send + 'static,
     rle_version: RleVersion,
 ) -> Box<dyn PrimitiveValueDecoder<N> + Send> {
@@ -58,7 +58,7 @@ pub fn get_signed_int_decoder<N: NInt>(
     }
 }
 
-pub fn get_unsigned_int_decoder<N: NInt>(
+pub fn get_unsigned_int_decoder<N: NInt + Default>(
     reader: impl Read + Send + 'static,
     rle_version: RleVersion,
 ) -> Box<dyn PrimitiveValueDecoder<N> + Send> {

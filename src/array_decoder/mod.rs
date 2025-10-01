@@ -74,6 +74,16 @@ pub trait ArrayBatchDecoder: Send {
         batch_size: usize,
         parent_present: Option<&NullBuffer>,
     ) -> Result<ArrayRef>;
+
+    /// Skip over `num_records` records without decoding them into arrays
+    ///
+    /// This is used for row selection functionality to efficiently skip
+    /// records that are not needed. The implementation should advance
+    /// the internal state to skip the specified number of records.
+    ///
+    /// Returns the number of records actually skipped, which may be less
+    /// than `num_records` if there are not enough records remaining.
+    fn skip_records(&mut self, num_records: usize) -> Result<usize>;
 }
 
 struct PrimitiveArrayDecoder<T: ArrowPrimitiveType> {
@@ -122,6 +132,20 @@ impl<T: ArrowPrimitiveType> ArrayBatchDecoder for PrimitiveArrayDecoder<T> {
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // For primitive decoders, we need to skip both the data and the present stream
+
+        // Skip present stream if it exists
+        if let Some(present) = &mut self.present {
+            present.skip(num_records)?;
+        }
+
+        // Skip data stream using the decoder's skip method
+        self.iter.skip(num_records)?;
+
+        Ok(num_records)
+    }
 }
 
 type Int64ArrayDecoder = PrimitiveArrayDecoder<Int64Type>;
@@ -167,6 +191,18 @@ impl ArrayBatchDecoder for BooleanArrayDecoder {
         };
         Ok(Arc::new(array))
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // Skip present stream if it exists
+        if let Some(present) = &mut self.present {
+            present.skip(num_records)?;
+        }
+
+        // Skip data stream using the decoder's skip method
+        self.iter.skip(num_records)?;
+
+        Ok(num_records)
+    }
 }
 
 struct PresentDecoder {
@@ -190,6 +226,11 @@ impl PresentDecoder {
         let mut data = vec![false; size];
         self.inner.decode(&mut data)?;
         Ok(NullBuffer::from(data))
+    }
+
+    /// Skip a specified number of present values
+    fn skip(&mut self, count: usize) -> Result<()> {
+        self.inner.skip(count)
     }
 }
 
@@ -449,5 +490,40 @@ impl NaiveStripeDecoder {
             batch_size,
             number_of_rows,
         })
+    }
+
+    /// Skip a specific number of records by actually skipping data in decoders
+    /// This is the key method for row selection functionality
+    pub fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        if self.index >= self.number_of_rows {
+            return Ok(0);
+        }
+
+        let remaining_rows = self.number_of_rows - self.index;
+        let rows_to_skip = remaining_rows.min(num_records);
+
+        // Actually skip data in each decoder to avoid unnecessary decoding
+        for decoder in &mut self.decoders {
+            decoder.skip_records(rows_to_skip)?;
+        }
+
+        // Update the index to reflect the skipped records
+        self.index += rows_to_skip;
+        Ok(rows_to_skip)
+    }
+
+    /// Get the current position (number of rows processed so far)
+    pub fn current_position(&self) -> usize {
+        self.index
+    }
+
+    /// Get the total number of rows in this stripe
+    pub fn total_rows(&self) -> usize {
+        self.number_of_rows
+    }
+
+    /// Check if there are more rows to process
+    pub fn has_more_rows(&self) -> bool {
+        self.index < self.number_of_rows
     }
 }

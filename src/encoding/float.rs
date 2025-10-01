@@ -50,7 +50,7 @@ impl<F: Float, R: std::io::Read> FloatDecoder<F, R> {
     }
 }
 
-impl<F: Float, R: std::io::Read> PrimitiveValueDecoder<F> for FloatDecoder<F, R> {
+impl<F: Float + Default, R: std::io::Read> PrimitiveValueDecoder<F> for FloatDecoder<F, R> {
     fn decode(&mut self, out: &mut [F]) -> Result<()> {
         let bytes = must_cast_slice_mut::<F, u8>(out);
         self.reader.read_exact(bytes).context(IoSnafu)?;

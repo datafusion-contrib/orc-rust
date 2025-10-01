@@ -134,4 +134,19 @@ impl ArrayBatchDecoder for UnionArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // For union arrays, we need to skip both the tags and all variant decoders
+        // First skip the tags
+        let mut tags = vec![0; num_records];
+        self.tags.decode(&mut tags)?;
+
+        // Then skip all variant decoders
+        let mut min_skipped = num_records;
+        for variant in &mut self.variants {
+            let skipped = variant.skip_records(num_records)?;
+            min_skipped = min_skipped.min(skipped);
+        }
+        Ok(min_skipped)
+    }
 }

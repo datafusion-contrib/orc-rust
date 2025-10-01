@@ -267,6 +267,10 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampOffsetArrayDecoder<T>
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        self.inner.skip_records(num_records)
+    }
 }
 
 /// Wrapper around PrimitiveArrayDecoder to allow specifying the timezone of the output
@@ -285,6 +289,10 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampInstantArrayDecoder<T
             .with_timezone("UTC");
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
+    }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        self.0.skip_records(num_records)
     }
 }
 

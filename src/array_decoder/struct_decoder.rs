@@ -76,4 +76,14 @@ impl ArrayBatchDecoder for StructArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_records(&mut self, num_records: usize) -> Result<usize> {
+        // For struct arrays, we need to skip all child decoders
+        let mut min_skipped = num_records;
+        for child in &mut self.decoders {
+            let skipped = child.skip_records(num_records)?;
+            min_skipped = min_skipped.min(skipped);
+        }
+        Ok(min_skipped)
+    }
 }
