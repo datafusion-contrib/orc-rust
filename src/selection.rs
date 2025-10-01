@@ -26,6 +26,7 @@ use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use arrow_select::filter::SlicesIterator;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::ops::Range;
 
 /// [`RowSelector`] specifies whether to select or skip a number of rows
@@ -76,7 +77,7 @@ impl RowSelector {
 ///     RowSelector::select(200),
 /// ]);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct RowSelection {
     selectors: Vec<RowSelector>,
 }
@@ -140,82 +141,111 @@ impl RowSelection {
         Self { selectors }
     }
 
-    /// Returns the total number of rows that would be selected
-    pub fn row_count(&self) -> usize {
-        self.selectors
-            .iter()
-            .filter(|s| !s.skip)
-            .map(|s| s.row_count)
-            .sum()
-    }
-
-    /// Returns the total number of rows that would be skipped
-    pub fn skipped_row_count(&self) -> usize {
-        self.selectors
-            .iter()
-            .filter(|s| s.skip)
-            .map(|s| s.row_count)
-            .sum()
-    }
-
-    /// Returns true if this selection would select any rows
+    /// Returns `true` if this [`RowSelection`] selects any rows
     pub fn selects_any(&self) -> bool {
-        self.selectors.iter().any(|s| !s.skip && s.row_count > 0)
+        self.selectors.iter().any(|x| !x.skip)
     }
 
-    /// Returns an iterator over the selectors
+    /// Trims this [`RowSelection`] removing any trailing skips
+    pub(crate) fn trim(mut self) -> Self {
+        while self.selectors.last().map(|x| x.skip).unwrap_or(false) {
+            self.selectors.pop();
+        }
+        self
+    }
+
+    /// Applies an offset to this [`RowSelection`], skipping the first `offset` selected rows
+    pub(crate) fn offset(mut self, offset: usize) -> Self {
+        if offset == 0 {
+            return self;
+        }
+
+        let mut selected_count = 0;
+        let mut skipped_count = 0;
+
+        // Find the index where the selector exceeds the row count
+        let find = self
+            .selectors
+            .iter()
+            .position(|selector| match selector.skip {
+                true => {
+                    skipped_count += selector.row_count;
+                    false
+                }
+                false => {
+                    selected_count += selector.row_count;
+                    selected_count > offset
+                }
+            });
+
+        let split_idx = match find {
+            Some(idx) => idx,
+            None => {
+                self.selectors.clear();
+                return self;
+            }
+        };
+
+        let mut selectors = Vec::with_capacity(self.selectors.len() - split_idx + 1);
+        selectors.push(RowSelector::skip(skipped_count + offset));
+        selectors.push(RowSelector::select(selected_count - offset));
+        selectors.extend_from_slice(&self.selectors[split_idx + 1..]);
+
+        Self { selectors }
+    }
+
+    /// Limit this [`RowSelection`] to only select `limit` rows
+    pub(crate) fn limit(mut self, mut limit: usize) -> Self {
+        if limit == 0 {
+            self.selectors.clear();
+        }
+
+        for (idx, selection) in self.selectors.iter_mut().enumerate() {
+            if !selection.skip {
+                if selection.row_count >= limit {
+                    selection.row_count = limit;
+                    self.selectors.truncate(idx + 1);
+                    break;
+                } else {
+                    limit -= selection.row_count;
+                }
+            }
+        }
+        self
+    }
+
+    /// Returns an iterator over the [`RowSelector`]s for this
+    /// [`RowSelection`].
     pub fn iter(&self) -> impl Iterator<Item = &RowSelector> {
         self.selectors.iter()
     }
 
-    /// Returns the intersection of this selection with another
-    pub fn intersection(&self, other: &RowSelection) -> RowSelection {
-        // This is a simplified implementation
-        // In practice, you'd need more sophisticated logic to handle
-        // the intersection of two row selections
-        if self.selectors.is_empty() {
-            other.clone()
-        } else if other.selectors.is_empty() {
-            self.clone()
-        } else {
-            // For now, return the more restrictive selection
-            if self.row_count() < other.row_count() {
-                self.clone()
-            } else {
-                other.clone()
-            }
-        }
+    /// Returns the number of selected rows
+    pub fn row_count(&self) -> usize {
+        self.iter().filter(|s| !s.skip).map(|s| s.row_count).sum()
     }
 
-    /// Trim the selection to fit within the given number of rows
-    pub fn trim(&self, max_rows: usize) -> RowSelection {
-        let mut selectors = Vec::new();
-        let mut remaining = max_rows;
-        
-        for selector in &self.selectors {
-            if remaining == 0 {
-                break;
-            }
-            
-            let count = selector.row_count.min(remaining);
-            if count > 0 {
-                selectors.push(RowSelector {
-                    row_count: count,
-                    skip: selector.skip,
-                });
-                remaining -= count;
-            }
-        }
-        
-        RowSelection { selectors }
+    /// Returns the number of de-selected rows
+    pub fn skipped_row_count(&self) -> usize {
+        self.iter().filter(|s| s.skip).map(|s| s.row_count).sum()
     }
 }
 
-impl Default for RowSelection {
-    fn default() -> Self {
-        Self {
-            selectors: Vec::new(),
-        }
+impl From<RowSelection> for VecDeque<RowSelector> {
+    fn from(value: RowSelection) -> Self {
+        value.selectors.into()
+    }
+}
+
+impl From<Vec<RowSelector>> for RowSelection {
+    fn from(selectors: Vec<RowSelector>) -> Self {
+        Self::from(selectors)
+    }
+}
+
+impl From<RowSelection> for Vec<RowSelector> {
+    fn from(value: RowSelection) -> Self {
+        value.selectors
     }
 }
 
@@ -339,18 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn test_row_selection_trim() {
-        let selection = RowSelection::from(vec![
-            RowSelector::select(100),
-            RowSelector::skip(50),
-            RowSelector::select(200),
-        ]);
-
-        let trimmed = selection.trim(250);
-        assert_eq!(trimmed.row_count(), 250);
-    }
-
-    #[test]
     fn test_arrow_predicate_fn() {
         let schema = Arc::new(Schema::new(vec![Field::new("col", DataType::Int32, false)]));
         let col = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]));
@@ -362,7 +380,10 @@ mod tests {
                 let col = batch.column(0);
                 let int_array = col.as_any().downcast_ref::<Int32Array>().unwrap();
                 Ok(BooleanArray::from(
-                    int_array.iter().map(|v| v.map(|x| x > 2)).collect::<Vec<_>>(),
+                    int_array
+                        .iter()
+                        .map(|v| v.map(|x| x > 2))
+                        .collect::<Vec<_>>(),
                 ))
             },
             projection,

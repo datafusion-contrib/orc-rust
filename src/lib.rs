@@ -61,6 +61,7 @@ pub mod projection;
 #[allow(dead_code)]
 mod proto;
 pub mod reader;
+pub mod read_plan;
 pub mod schema;
 pub mod selection;
 pub mod statistics;
