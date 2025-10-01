@@ -26,10 +26,11 @@ use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use crate::array_decoder::NaiveStripeDecoder;
 use crate::error::Result;
 use crate::projection::ProjectionMask;
+use crate::read_plan::ReadPlan;
 use crate::reader::metadata::{read_metadata, FileMetadata};
 use crate::reader::ChunkReader;
 use crate::schema::RootDataType;
-use crate::selection::{RowSelection, RowFilter};
+use crate::selection::{RowFilter, RowSelection};
 use crate::stripe::{Stripe, StripeMetadata};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -143,12 +144,17 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
             stripe_index: 0,
             file_byte_range: self.file_byte_range,
         };
+        use crate::read_plan::ReadPlanBuilder;
+
+        let read_plan = ReadPlanBuilder::new(self.batch_size)
+            .with_selection(self.row_selection)
+            .build();
+
         ArrowReader {
             cursor,
             schema_ref,
             current_stripe: None,
-            batch_size: self.batch_size,
-            row_selection: self.row_selection,
+            read_plan,
             row_filter: self.row_filter,
         }
     }
@@ -157,10 +163,8 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
 pub struct ArrowReader<R> {
     cursor: Cursor<R>,
     schema_ref: SchemaRef,
-    current_stripe: Option<Box<dyn Iterator<Item = Result<RecordBatch>> + Send>>,
-    batch_size: usize,
-    #[allow(dead_code)]
-    row_selection: Option<RowSelection>,
+    current_stripe: Option<NaiveStripeDecoder>,
+    read_plan: ReadPlan,
     #[allow(dead_code)]
     row_filter: Option<RowFilter>,
 }
@@ -176,9 +180,9 @@ impl<R: ChunkReader> ArrowReader<R> {
         let stripe = self.cursor.next().transpose()?;
         match stripe {
             Some(stripe) => {
-                let decoder =
-                    NaiveStripeDecoder::new(stripe, self.schema_ref.clone(), self.batch_size)?;
-                self.current_stripe = Some(Box::new(decoder));
+                let batch_size = self.read_plan.batch_size();
+                let decoder = NaiveStripeDecoder::new(stripe, self.schema_ref.clone(), batch_size)?;
+                self.current_stripe = Some(decoder);
                 self.next().transpose()
             }
             None => Ok(None),
@@ -196,17 +200,83 @@ impl<R: ChunkReader> Iterator for ArrowReader<R> {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.current_stripe.as_mut() {
-            Some(stripe) => {
-                match stripe
-                    .next()
-                    .map(|batch| batch.map_err(|err| ArrowError::ExternalError(Box::new(err))))
-                {
-                    Some(rb) => Some(rb),
-                    None => self.try_advance_stripe().transpose(),
+        self.next_inner().transpose()
+    }
+}
+
+impl<R: ChunkReader> ArrowReader<R> {
+    /// Internal method to handle row selection logic, similar to parquet's next_inner
+    fn next_inner(&mut self) -> Result<Option<RecordBatch>, ArrowError> {
+        match self.read_plan.selection_mut() {
+            Some(selection) => {
+                // Process row selection by skipping records as needed
+                while !selection.is_empty() {
+                    let front = selection.pop_front().unwrap();
+                    if front.skip {
+                        // Skip the specified number of records
+                        let skipped = self
+                            .current_stripe
+                            .as_mut()
+                            .ok_or_else(|| {
+                                ArrowError::ExternalError(Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidInput,
+                                    "No current stripe available",
+                                )))
+                            })?
+                            .skip_records(front.row_count)
+                            .map_err(|e| ArrowError::ExternalError(Box::new(e)))?;
+
+                        if skipped != front.row_count {
+                            return Err(ArrowError::ExternalError(Box::new(std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!(
+                                    "Expected to skip {} records, but only skipped {}",
+                                    front.row_count, skipped
+                                ),
+                            ))));
+                        }
+                        continue;
+                    }
+
+                    // For selected records, we need to read them
+                    // Since we can't easily read partial batches with the current NaiveStripeDecoder,
+                    // we'll use the regular iterator approach for now
+                    // In a more sophisticated implementation, we could modify NaiveStripeDecoder
+                    // to support reading specific numbers of records
+                    break;
+                }
+
+                // Use regular processing for the remaining records
+                match self.current_stripe.as_mut() {
+                    Some(stripe) => {
+                        match stripe.next() {
+                            Some(Ok(batch)) => Ok(Some(batch)),
+                            Some(Err(e)) => Err(ArrowError::ExternalError(Box::new(e))),
+                            None => {
+                                // Try to advance to next stripe
+                                self.try_advance_stripe()
+                            }
+                        }
+                    }
+                    None => self.try_advance_stripe(),
                 }
             }
-            None => self.try_advance_stripe().transpose(),
+            None => {
+                // No row selection, use regular processing
+                match self.current_stripe.as_mut() {
+                    Some(stripe) => {
+                        match stripe.next() {
+                            Some(Ok(batch)) => Ok(Some(batch)),
+                            Some(Err(e)) => Err(ArrowError::ExternalError(Box::new(e))),
+                            None => {
+                                // Try to advance to next stripe
+                                self.try_advance_stripe()
+                            }
+                        }
+                    }
+                    None => self.try_advance_stripe(),
+                }
+            }
         }
     }
 }
