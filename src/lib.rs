@@ -62,6 +62,7 @@ pub mod projection;
 mod proto;
 pub mod reader;
 pub mod schema;
+pub mod selection;
 pub mod statistics;
 pub mod stripe;
 mod writer;

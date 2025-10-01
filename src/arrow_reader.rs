@@ -29,6 +29,7 @@ use crate::projection::ProjectionMask;
 use crate::reader::metadata::{read_metadata, FileMetadata};
 use crate::reader::ChunkReader;
 use crate::schema::RootDataType;
+use crate::selection::{RowSelection, RowFilter};
 use crate::stripe::{Stripe, StripeMetadata};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -40,6 +41,8 @@ pub struct ArrowReaderBuilder<R> {
     pub(crate) projection: ProjectionMask,
     pub(crate) schema_ref: Option<SchemaRef>,
     pub(crate) file_byte_range: Option<Range<usize>>,
+    pub(crate) row_selection: Option<RowSelection>,
+    pub(crate) row_filter: Option<RowFilter>,
 }
 
 impl<R> ArrowReaderBuilder<R> {
@@ -51,6 +54,8 @@ impl<R> ArrowReaderBuilder<R> {
             projection: ProjectionMask::all(),
             schema_ref: None,
             file_byte_range: None,
+            row_selection: None,
+            row_filter: None,
         }
     }
 
@@ -76,6 +81,25 @@ impl<R> ArrowReaderBuilder<R> {
     /// Specifies a range of file bytes that will read the strips offset within this range
     pub fn with_file_byte_range(mut self, range: Range<usize>) -> Self {
         self.file_byte_range = Some(range);
+        self
+    }
+
+    /// Provide a RowSelection to filter out rows, and avoid fetching their
+    /// data into memory.
+    ///
+    /// This feature is used to restrict which rows are decoded within stripes,
+    /// skipping ranges of rows that are not needed.
+    pub fn with_row_selection(mut self, selection: RowSelection) -> Self {
+        self.row_selection = Some(selection);
+        self
+    }
+
+    /// Provide a RowFilter to skip decoding rows
+    ///
+    /// Row filters are applied after row selection and can be used to
+    /// apply predicates during the read process.
+    pub fn with_row_filter(mut self, filter: RowFilter) -> Self {
+        self.row_filter = Some(filter);
         self
     }
 
@@ -124,6 +148,8 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
             schema_ref,
             current_stripe: None,
             batch_size: self.batch_size,
+            row_selection: self.row_selection,
+            row_filter: self.row_filter,
         }
     }
 }
@@ -133,6 +159,10 @@ pub struct ArrowReader<R> {
     schema_ref: SchemaRef,
     current_stripe: Option<Box<dyn Iterator<Item = Result<RecordBatch>> + Send>>,
     batch_size: usize,
+    #[allow(dead_code)]
+    row_selection: Option<RowSelection>,
+    #[allow(dead_code)]
+    row_filter: Option<RowFilter>,
 }
 
 impl<R> ArrowReader<R> {

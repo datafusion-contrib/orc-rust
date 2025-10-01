@@ -33,6 +33,7 @@ all-features = true
 
 [dependencies]
 arrow = { version = "56.0", features = ["prettyprint", "chrono-tz", "ipc_compression"] }
+arrow-select = "56.0"
 bytemuck = { version = "1.22.0", features = ["must_cast"] }
 bytes = "1.10.1"
 chrono = { version = "0.4.41", default-features = false, features = ["std"] }
