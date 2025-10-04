@@ -51,6 +51,9 @@ pub trait PrimitiveValueEncoder<V: Copy>: EstimateMemory {
 }
 
 pub trait PrimitiveValueDecoder<V> {
+    /// Skip the next `n` values without decoding them. Failing if it cannot skip the enough values.
+    fn skip(&mut self, n: usize) -> Result<()>;
+
     /// Decode out.len() values into out at a time, failing if it cannot fill
     /// the buffer.
     fn decode(&mut self, out: &mut [V]) -> Result<()>;
@@ -98,6 +101,9 @@ mod tests {
     struct DummyDecoder;
 
     impl PrimitiveValueDecoder<i32> for DummyDecoder {
+        fn skip(&mut self, n: usize) -> Result<()> {
+            Ok(())
+        }
         fn decode(&mut self, out: &mut [i32]) -> Result<()> {
             let values = (0..out.len()).map(|x| x as i32).collect::<Vec<_>>();
             out.copy_from_slice(&values);

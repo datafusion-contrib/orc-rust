@@ -53,9 +53,17 @@ pub trait GenericRle<V: Copy> {
     //       directly to the output and skip the middle man. Ideally the internal buffer
     //       should only be used for leftovers between calls to PrimitiveValueDecoder::decode.
     fn decode_batch(&mut self) -> Result<()>;
+
+    /// Skip n values without decoding them, failing if it cannot skip enough values.
+    /// This should first consume the left values in the internal buffer, then skip the remaining values from the reader.
+    fn skip_values(&mut self, n: usize) -> Result<()>;
 }
 
 impl<V: Copy, G: GenericRle<V> + sealed::Rle> PrimitiveValueDecoder<V> for G {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.skip_values(n)
+    }
+
     fn decode(&mut self, out: &mut [V]) -> Result<()> {
         let available = self.available();
         // If we have enough leftover to copy, can skip decoding more.
