@@ -61,6 +61,7 @@ pub mod projection;
 #[allow(dead_code)]
 mod proto;
 pub mod reader;
+pub mod row_selection;
 pub mod schema;
 pub mod statistics;
 pub mod stripe;
@@ -70,3 +71,4 @@ pub use arrow_reader::{ArrowReader, ArrowReaderBuilder};
 pub use arrow_writer::{ArrowWriter, ArrowWriterBuilder};
 #[cfg(feature = "async")]
 pub use async_arrow_reader::ArrowStreamReader;
+pub use row_selection::{RowSelection, RowSelector};
