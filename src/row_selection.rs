@@ -507,10 +507,10 @@ mod tests {
     #[test]
     fn test_row_selection_and_then() {
         // First selection: skip 5, select 10, skip 5
-        let first = RowSelection::from_consecutive_ranges(vec![5..15].into_iter(), 20);
+        let first = RowSelection::from_consecutive_ranges(std::iter::once(5..15), 20);
 
         // Second selection (operates on the 10 selected rows): skip 2, select 5, skip 3
-        let second = RowSelection::from_consecutive_ranges(vec![2..7].into_iter(), 10);
+        let second = RowSelection::from_consecutive_ranges(std::iter::once(2..7), 10);
 
         let result = first.and_then(&second);
 
