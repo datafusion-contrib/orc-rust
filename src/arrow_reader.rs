@@ -28,6 +28,7 @@ use crate::error::Result;
 use crate::projection::ProjectionMask;
 use crate::reader::metadata::{read_metadata, FileMetadata};
 use crate::reader::ChunkReader;
+use crate::row_selection::RowSelection;
 use crate::schema::RootDataType;
 use crate::stripe::{Stripe, StripeMetadata};
 
@@ -40,6 +41,7 @@ pub struct ArrowReaderBuilder<R> {
     pub(crate) projection: ProjectionMask,
     pub(crate) schema_ref: Option<SchemaRef>,
     pub(crate) file_byte_range: Option<Range<usize>>,
+    pub(crate) row_selection: Option<RowSelection>,
 }
 
 impl<R> ArrowReaderBuilder<R> {
@@ -51,6 +53,7 @@ impl<R> ArrowReaderBuilder<R> {
             projection: ProjectionMask::all(),
             schema_ref: None,
             file_byte_range: None,
+            row_selection: None,
         }
     }
 
@@ -76,6 +79,33 @@ impl<R> ArrowReaderBuilder<R> {
     /// Specifies a range of file bytes that will read the strips offset within this range
     pub fn with_file_byte_range(mut self, range: Range<usize>) -> Self {
         self.file_byte_range = Some(range);
+        self
+    }
+
+    /// Set a [`RowSelection`] to filter rows
+    ///
+    /// The [`RowSelection`] specifies which rows should be decoded from the ORC file.
+    /// This can be used to skip rows that don't match predicates, reducing I/O and
+    /// improving query performance.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use orc_rust::arrow_reader::ArrowReaderBuilder;
+    /// # use orc_rust::row_selection::{RowSelection, RowSelector};
+    /// let file = File::open("data.orc").unwrap();
+    /// let selection = vec![
+    ///     RowSelector::skip(100),
+    ///     RowSelector::select(50),
+    /// ].into();
+    /// let reader = ArrowReaderBuilder::try_new(file)
+    ///     .unwrap()
+    ///     .with_row_selection(selection)
+    ///     .build();
+    /// ```
+    pub fn with_row_selection(mut self, row_selection: RowSelection) -> Self {
+        self.row_selection = Some(row_selection);
         self
     }
 
@@ -124,6 +154,7 @@ impl<R: ChunkReader> ArrowReaderBuilder<R> {
             schema_ref,
             current_stripe: None,
             batch_size: self.batch_size,
+            row_selection: self.row_selection,
         }
     }
 }
@@ -133,6 +164,7 @@ pub struct ArrowReader<R> {
     schema_ref: SchemaRef,
     current_stripe: Option<Box<dyn Iterator<Item = Result<RecordBatch>> + Send>>,
     batch_size: usize,
+    row_selection: Option<RowSelection>,
 }
 
 impl<R> ArrowReader<R> {
@@ -146,8 +178,22 @@ impl<R: ChunkReader> ArrowReader<R> {
         let stripe = self.cursor.next().transpose()?;
         match stripe {
             Some(stripe) => {
-                let decoder =
-                    NaiveStripeDecoder::new(stripe, self.schema_ref.clone(), self.batch_size)?;
+                // Split off the row selection for this stripe
+                let stripe_rows = stripe.number_of_rows();
+                let selection = self.row_selection.as_mut().and_then(|s| {
+                    if s.row_count() > 0 {
+                        Some(s.split_off(stripe_rows))
+                    } else {
+                        None
+                    }
+                });
+
+                let decoder = NaiveStripeDecoder::new_with_selection(
+                    stripe,
+                    self.schema_ref.clone(),
+                    self.batch_size,
+                    selection,
+                )?;
                 self.current_stripe = Some(Box::new(decoder));
                 self.next().transpose()
             }
