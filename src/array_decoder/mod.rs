@@ -260,14 +260,14 @@ impl Iterator for NaiveStripeDecoder {
                         let selector = selectors[self.selection_index];
                         (selector.skip, selector.row_count)
                     };
-                    
+
                     let (is_skip, row_count) = selector_info;
-                    
+
                     if is_skip {
                         // Skip these rows by advancing the index
                         self.index += row_count;
                         self.selection_index += 1;
-                        
+
                         // Decode and discard the skipped rows to advance the internal decoders
                         if let Err(e) = self.skip_rows(row_count) {
                             return Some(Err(e));
@@ -277,20 +277,20 @@ impl Iterator for NaiveStripeDecoder {
                         let rows_to_read = row_count.min(self.batch_size);
                         let remaining = self.number_of_rows - self.index;
                         let actual_rows = rows_to_read.min(remaining);
-                        
+
                         if actual_rows == 0 {
                             self.selection_index += 1;
                             continue;
                         }
-                        
+
                         let record = self.decode_next_batch(actual_rows).transpose()?;
                         self.index += actual_rows;
-                        
+
                         // Update selector to track progress
                         if actual_rows >= row_count {
                             self.selection_index += 1;
                         }
-                        
+
                         return Some(record);
                     }
                 }

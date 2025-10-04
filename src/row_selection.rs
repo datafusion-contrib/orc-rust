@@ -109,8 +109,12 @@ impl RowSelection {
         let iter = filters.iter().flat_map(|filter| {
             let offset = next_offset;
             next_offset += filter.len();
-            assert_eq!(filter.null_count(), 0, "filter arrays must not contain nulls");
-            
+            assert_eq!(
+                filter.null_count(),
+                0,
+                "filter arrays must not contain nulls"
+            );
+
             // Find consecutive ranges of true values
             let mut ranges = vec![];
             let mut start = None;
@@ -503,12 +507,10 @@ mod tests {
     #[test]
     fn test_row_selection_and_then() {
         // First selection: skip 5, select 10, skip 5
-        let first =
-            RowSelection::from_consecutive_ranges(vec![5..15].into_iter(), 20);
+        let first = RowSelection::from_consecutive_ranges(vec![5..15].into_iter(), 20);
 
         // Second selection (operates on the 10 selected rows): skip 2, select 5, skip 3
-        let second =
-            RowSelection::from_consecutive_ranges(vec![2..7].into_iter(), 10);
+        let second = RowSelection::from_consecutive_ranges(vec![2..7].into_iter(), 10);
 
         let result = first.and_then(&second);
 
@@ -556,4 +558,3 @@ mod tests {
         RowSelection::from_consecutive_ranges(vec![10..20, 5..15].into_iter(), 25);
     }
 }
-

@@ -394,4 +394,3 @@ fn test_row_selection_with_compression() {
 //
 //     assert_eq!(total_rows, 3);
 // }
-
