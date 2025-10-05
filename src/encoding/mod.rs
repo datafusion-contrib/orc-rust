@@ -109,8 +109,8 @@ mod tests {
     }
 
     impl PrimitiveValueDecoder<i32> for DummyDecoder {
-        fn skip(&mut self, _n: usize) -> Result<()> {
-            self.value += 1;
+        fn skip(&mut self, n: usize) -> Result<()> {
+            self.value += n as i32;
             Ok(())
         }
         fn decode(&mut self, out: &mut [i32]) -> Result<()> {
@@ -118,6 +118,7 @@ mod tests {
                 .map(|x| self.value + x as i32)
                 .collect::<Vec<_>>();
             out.copy_from_slice(&values);
+            self.value += out.len() as i32;
             Ok(())
         }
     }
@@ -167,5 +168,18 @@ mod tests {
         decoder.decode_spaced(&mut out, &present).unwrap();
         let expected = vec![-1; len];
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn test_skip() {
+        let mut decoder = DummyDecoder::new();
+        decoder.skip(10).unwrap();
+        let mut out = vec![-1; 1];
+        decoder.decode(&mut out).unwrap();
+        assert_eq!(out, vec![10]);
+        decoder.skip(10).unwrap();
+        let mut out2 = vec![-1; 5];
+        decoder.decode(&mut out2).unwrap();
+        assert_eq!(out2, vec![21, 22, 23, 24, 25]);
     }
 }

@@ -172,4 +172,38 @@ mod tests {
         decoder.decode(&mut actual).unwrap();
         assert_eq!(actual, expected)
     }
+
+    #[test]
+    fn test_skip_run() {
+        // Run: 100 false values (0x61, 0x00)
+        let data = [0x61u8, 0x00];
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Decode first 10 values
+        let mut batch = vec![true; 10];
+        decoder.decode(&mut batch).unwrap();
+        assert_eq!(batch, vec![false; 10]);
+
+        // Skip next 80 values
+        decoder.skip(80).unwrap();
+
+        // Decode last 10 values
+        let mut batch = vec![true; 10];
+        decoder.decode(&mut batch).unwrap();
+        assert_eq!(batch, vec![false; 10]);
+    }
+
+    #[test]
+    fn test_skip_all() {
+        let data = [0x61u8, 0x00]; // 100 false values
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Skip all 100 values
+        decoder.skip(100).unwrap();
+
+        // Try to decode should fail (EOF)
+        let mut batch = vec![false; 1];
+        let result = decoder.decode(&mut batch);
+        assert!(result.is_err());
+    }
 }
