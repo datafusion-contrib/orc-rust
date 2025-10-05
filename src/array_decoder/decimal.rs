@@ -112,6 +112,12 @@ struct DecimalScaleRepairDecoder {
 }
 
 impl PrimitiveValueDecoder<i128> for DecimalScaleRepairDecoder {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.varint_iter.skip(n)?;
+        self.scale_iter.skip(n)?;
+        Ok(())
+    }
+
     fn decode(&mut self, out: &mut [i128]) -> Result<()> {
         // TODO: can probably optimize, reuse buffers?
         let mut varint = vec![0; out.len()];

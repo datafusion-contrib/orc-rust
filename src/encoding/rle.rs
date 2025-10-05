@@ -61,6 +61,7 @@ pub trait GenericRle<V: Copy> {
 
 impl<V: Copy, G: GenericRle<V> + sealed::Rle> PrimitiveValueDecoder<V> for G {
     fn skip(&mut self, n: usize) -> Result<()> {
+        // Delegate to the GenericRle implementation
         self.skip_values(n)
     }
 

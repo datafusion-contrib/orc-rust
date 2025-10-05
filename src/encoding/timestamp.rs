@@ -50,6 +50,12 @@ impl<T: ArrowTimestampType> TimestampDecoder<T> {
 }
 
 impl<T: ArrowTimestampType> PrimitiveValueDecoder<T::Native> for TimestampDecoder<T> {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.data.skip(n)?;
+        self.secondary.skip(n)?;
+        Ok(())
+    }
+
     fn decode(&mut self, out: &mut [T::Native]) -> Result<()> {
         // TODO: can probably optimize, reuse buffers?
         let mut data = vec![0; out.len()];
@@ -90,6 +96,12 @@ impl TimestampNanosecondAsDecimalDecoder {
 }
 
 impl PrimitiveValueDecoder<i128> for TimestampNanosecondAsDecimalDecoder {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.data.skip(n)?;
+        self.secondary.skip(n)?;
+        Ok(())
+    }
+
     fn decode(&mut self, out: &mut [i128]) -> Result<()> {
         // TODO: can probably optimize, reuse buffers?
         let mut data = vec![0; out.len()];

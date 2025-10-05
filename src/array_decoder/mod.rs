@@ -75,6 +75,12 @@ pub trait ArrayBatchDecoder: Send {
         batch_size: usize,
         parent_present: Option<&NullBuffer>,
     ) -> Result<ArrayRef>;
+
+    /// Skip the next `n` values without decoding them, failing if it cannot skip the enough values.
+    fn skip_values(&mut self, n: usize) -> Result<()> {
+        // TODO: implement
+        Ok(())
+    }
 }
 
 struct PrimitiveArrayDecoder<T: ArrowPrimitiveType> {
@@ -123,6 +129,24 @@ impl<T: ArrowPrimitiveType> ArrayBatchDecoder for PrimitiveArrayDecoder<T> {
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
+
+    fn skip_rows(&mut self, row_count: usize) -> Result<()> {
+        // If we have a present stream, we need to decode it to know how many
+        // non-null values to skip in the data stream
+        let non_null_count = if let Some(ref mut present) = self.present {
+            let mut present_buffer = vec![false; row_count];
+            present.inner.decode(&mut present_buffer)?;
+            // Count non-null values (where present is true)
+            present_buffer.iter().filter(|&&v| v).count()
+        } else {
+            // No nulls, so all rows have values
+            row_count
+        };
+
+        // Skip the data stream for non-null values only
+        self.iter.skip(non_null_count)?;
+        Ok(())
+    }
 }
 
 type Int64ArrayDecoder = PrimitiveArrayDecoder<Int64Type>;
@@ -167,6 +191,24 @@ impl ArrayBatchDecoder for BooleanArrayDecoder {
             }
         };
         Ok(Arc::new(array))
+    }
+
+    fn skip_rows(&mut self, row_count: usize) -> Result<()> {
+        // If we have a present stream, we need to decode it to know how many
+        // non-null values to skip in the data stream
+        let non_null_count = if let Some(ref mut present) = self.present {
+            let mut present_buffer = vec![false; row_count];
+            present.inner.decode(&mut present_buffer)?;
+            // Count non-null values (where present is true)
+            present_buffer.iter().filter(|&&v| v).count()
+        } else {
+            // No nulls, so all rows have values
+            row_count
+        };
+
+        // Skip the data stream for non-null values only
+        self.iter.skip(non_null_count)?;
+        Ok(())
     }
 }
 
@@ -513,14 +555,11 @@ impl NaiveStripeDecoder {
         })
     }
 
-    /// Skip the specified number of rows by decoding and discarding them
+    /// Skip the specified number of rows by calling skip_rows on each decoder
     fn skip_rows(&mut self, count: usize) -> Result<()> {
-        // Decode in batches to avoid large memory allocations
-        let mut remaining = count;
-        while remaining > 0 {
-            let chunk = self.batch_size.min(remaining);
-            let _ = self.inner_decode_next_batch(chunk)?;
-            remaining -= chunk;
+        // Call skip_rows on each decoder to efficiently skip rows
+        for decoder in &mut self.decoders {
+            decoder.skip_rows(count)?;
         }
         Ok(())
     }

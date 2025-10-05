@@ -36,6 +36,13 @@ impl<R: Read> UnboundedVarintStreamDecoder<R> {
 }
 
 impl<R: Read> PrimitiveValueDecoder<i128> for UnboundedVarintStreamDecoder<R> {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        for _ in 0..n {
+            read_varint_zigzagged::<i128, _, SignedEncoding>(&mut self.reader)?;
+        }
+        Ok(())
+    }
+
     fn decode(&mut self, out: &mut [i128]) -> Result<()> {
         for x in out.iter_mut() {
             *x = read_varint_zigzagged::<i128, _, SignedEncoding>(&mut self.reader)?;

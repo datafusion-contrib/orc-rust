@@ -55,6 +55,11 @@ impl<R: Read> BooleanDecoder<R> {
 }
 
 impl<R: Read> PrimitiveValueDecoder<bool> for BooleanDecoder<R> {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.decoder.skip(n)?;
+        Ok(())
+    }
+
     // TODO: can probably implement this better
     fn decode(&mut self, out: &mut [bool]) -> Result<()> {
         for x in out.iter_mut() {

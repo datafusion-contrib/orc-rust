@@ -51,7 +51,7 @@ pub trait PrimitiveValueEncoder<V: Copy>: EstimateMemory {
 }
 
 pub trait PrimitiveValueDecoder<V> {
-    /// Skip the next `n` values without decoding them. Failing if it cannot skip the enough values.
+    /// Skip the next `n` values without decoding them, failing if it cannot skip the enough values.
     fn skip(&mut self, n: usize) -> Result<()>;
 
     /// Decode out.len() values into out at a time, failing if it cannot fill
@@ -98,14 +98,25 @@ mod tests {
     use super::*;
 
     /// Emits numbers increasing from 0.
-    struct DummyDecoder;
+    struct DummyDecoder {
+        value: i32,
+    }
+
+    impl DummyDecoder {
+        fn new() -> Self {
+            Self { value: 0 }
+        }
+    }
 
     impl PrimitiveValueDecoder<i32> for DummyDecoder {
-        fn skip(&mut self, n: usize) -> Result<()> {
+        fn skip(&mut self, _n: usize) -> Result<()> {
+            self.value += 1;
             Ok(())
         }
         fn decode(&mut self, out: &mut [i32]) -> Result<()> {
-            let values = (0..out.len()).map(|x| x as i32).collect::<Vec<_>>();
+            let values = (0..out.len())
+                .map(|x| self.value + x as i32)
+                .collect::<Vec<_>>();
             out.copy_from_slice(&values);
             Ok(())
         }
@@ -128,7 +139,7 @@ mod tests {
     proptest! {
         #[test]
         fn decode_spaced_proptest(present: Vec<bool>) {
-            let mut decoder = DummyDecoder;
+            let mut decoder = DummyDecoder::new();
             let mut out = vec![-1; present.len()];
             decoder.decode_spaced(&mut out, &NullBuffer::from(present.clone())).unwrap();
             let expected = gen_spaced_dummy_decoder_expected(&present);
@@ -138,7 +149,7 @@ mod tests {
 
     #[test]
     fn decode_spaced_edge_cases() {
-        let mut decoder = DummyDecoder;
+        let mut decoder = DummyDecoder::new();
         let len = 10;
 
         // all present

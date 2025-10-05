@@ -308,6 +308,11 @@ impl TimestampNanosecondAsDecimalWithTzDecoder {
 }
 
 impl PrimitiveValueDecoder<i128> for TimestampNanosecondAsDecimalWithTzDecoder {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        self.0.skip(n)?;
+        Ok(())
+    }
+
     fn decode(&mut self, out: &mut [i128]) -> Result<()> {
         self.0.decode(out)?;
         for x in out.iter_mut() {

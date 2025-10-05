@@ -22,7 +22,7 @@ use bytes::{Bytes, BytesMut};
 use snafu::ResultExt;
 
 use crate::{
-    error::{IoSnafu, Result},
+    error::{IoSnafu, OutOfSpecSnafu, Result},
     memory::EstimateMemory,
 };
 
@@ -36,12 +36,12 @@ pub trait Float:
 impl Float for f32 {}
 impl Float for f64 {}
 
-pub struct FloatDecoder<F: Float, R: std::io::Read> {
+pub struct FloatDecoder<F: Float, R: std::io::Read + std::io::Seek> {
     reader: R,
     phantom: std::marker::PhantomData<F>,
 }
 
-impl<F: Float, R: std::io::Read> FloatDecoder<F, R> {
+impl<F: Float, R: std::io::Read + std::io::Seek> FloatDecoder<F, R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
@@ -50,7 +50,28 @@ impl<F: Float, R: std::io::Read> FloatDecoder<F, R> {
     }
 }
 
-impl<F: Float, R: std::io::Read> PrimitiveValueDecoder<F> for FloatDecoder<F, R> {
+impl<F: Float, R: std::io::Read + std::io::Seek> PrimitiveValueDecoder<F> for FloatDecoder<F, R> {
+    fn skip(&mut self, n: usize) -> Result<()> {
+        let bytes_to_skip = n * std::mem::size_of::<F>();
+        let cur_pos = self.reader.stream_position().context(IoSnafu)?;
+        let seek_pos = self
+            .reader
+            .seek(std::io::SeekFrom::Current(bytes_to_skip as i64))
+            .context(IoSnafu)?;
+        let actual_skip = seek_pos - cur_pos;
+        if actual_skip != bytes_to_skip as u64 {
+            return OutOfSpecSnafu {
+                msg: format!(
+                    "failed to skip float values, expected to skip {} bytes, but actually skipped {}",
+                    bytes_to_skip, actual_skip
+                ),
+            }
+            .fail();
+        }
+
+        Ok(())
+    }
+
     fn decode(&mut self, out: &mut [F]) -> Result<()> {
         let bytes = must_cast_slice_mut::<F, u8>(out);
         self.reader.read_exact(bytes).context(IoSnafu)?;
