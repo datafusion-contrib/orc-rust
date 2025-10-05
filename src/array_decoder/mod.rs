@@ -40,6 +40,7 @@ use crate::error::{
 use crate::proto::stream::Kind;
 use crate::schema::DataType;
 use crate::stripe::Stripe;
+use crate::RowSelection;
 
 use self::decimal::new_decimal_decoder;
 use self::list::ListArrayDecoder;
@@ -238,7 +239,7 @@ pub struct NaiveStripeDecoder {
     index: usize,
     batch_size: usize,
     number_of_rows: usize,
-    row_selection: Option<crate::row_selection::RowSelection>,
+    row_selection: Option<RowSelection>,
     selection_index: usize,
 }
 
@@ -251,17 +252,15 @@ impl Iterator for NaiveStripeDecoder {
             if self.row_selection.is_some() {
                 // Process selectors until we find rows to select or exhaust the selection
                 loop {
-                    let selector_info = {
-                        let selection = self.row_selection.as_ref().unwrap();
-                        let selectors = selection.selectors();
+                    let (is_skip, row_count) = {
+                        // Safety: this has been checked above
+                        let selectors = self.row_selection.as_ref().unwrap().selectors();
                         if self.selection_index >= selectors.len() {
                             return None;
                         }
                         let selector = selectors[self.selection_index];
                         (selector.skip, selector.row_count)
                     };
-
-                    let (is_skip, row_count) = selector_info;
 
                     if is_skip {
                         // Skip these rows by advancing the index
@@ -492,7 +491,7 @@ impl NaiveStripeDecoder {
         stripe: Stripe,
         schema_ref: SchemaRef,
         batch_size: usize,
-        row_selection: Option<crate::row_selection::RowSelection>,
+        row_selection: Option<RowSelection>,
     ) -> Result<Self> {
         let number_of_rows = stripe.number_of_rows();
         let decoders = stripe
