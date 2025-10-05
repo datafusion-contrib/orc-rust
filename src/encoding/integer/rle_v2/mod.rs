@@ -21,7 +21,7 @@ use bytes::BytesMut;
 
 use crate::{
     encoding::{rle::GenericRle, util::try_read_u8, PrimitiveValueEncoder},
-    error::Result,
+    error::{OutOfSpecSnafu, Result},
     memory::EstimateMemory,
 };
 
@@ -114,7 +114,12 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV2Decoder<N, R, S> 
         self.decoded_ints.clear();
         let header = match try_read_u8(&mut self.reader)? {
             Some(byte) => byte,
-            None => return Ok(()),
+            None => {
+                return OutOfSpecSnafu {
+                    msg: "not enough values to decode in RLE v2",
+                }
+                .fail();
+            }
         };
 
         match EncodingType::from_header(header) {
@@ -135,6 +140,35 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV2Decoder<N, R, S> 
                 &mut self.deltas,
                 header,
             )?,
+        }
+
+        Ok(())
+    }
+
+    fn skip_values(&mut self, n: usize) -> Result<()> {
+        let mut remaining = n;
+
+        // Try to skip from the internal buffer first
+        let available = self.decoded_ints.len() - self.current_head;
+        if available >= remaining {
+            self.advance(remaining);
+            return Ok(());
+        }
+
+        // Buffer insufficient, consume what's available
+        self.advance(available);
+        remaining -= available;
+
+        while remaining > 0 {
+            // Decode the next block into buffer
+            // TODO(optimization): avoid decode
+            self.decode_batch()?;
+
+            // Skip from the newly decoded buffer
+            let decoded_count = self.decoded_ints.len();
+            let to_skip = decoded_count.min(remaining);
+            self.advance(to_skip);
+            remaining -= to_skip;
         }
 
         Ok(())
@@ -647,6 +681,208 @@ mod tests {
         reader.decode(&mut actual).unwrap();
 
         Ok(actual)
+    }
+
+    #[test]
+    fn test_skip_values_short_repeat() -> Result<()> {
+        // Use the existing test data: ShortRepeat encoding
+        // 0x0a = 00_001_010 (width=1 byte, count=2+3=5 values)
+        // Followed by the value in 2 bytes (little-endian): 0x2710 = 10000
+        let data = [0x0a, 0x27, 0x10];
+        let mut decoder = RleV2Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&data));
+
+        // Decode first 2 values
+        let mut batch = vec![0; 2];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![10000, 10000]);
+
+        // Skip next 2 values from buffer
+        decoder.skip(2)?;
+
+        // Decode remaining 1 value
+        let mut batch = vec![0; 1];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![10000]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_values_entire_block() -> Result<()> {
+        // Generate test data using encoder
+        let mut encoder1 = RleV2Encoder::<_, UnsignedEncoding>::new();
+        for _ in 0..5 {
+            encoder1.write_one(100);
+        }
+        encoder1.flush();
+        let data1 = encoder1.take_inner();
+
+        let mut encoder2 = RleV2Encoder::<_, UnsignedEncoding>::new();
+        for _ in 0..5 {
+            encoder2.write_one(200);
+        }
+        encoder2.flush();
+        let data2 = encoder2.take_inner();
+
+        // Combine two blocks
+        let mut combined = Vec::new();
+        combined.extend_from_slice(&data1);
+        combined.extend_from_slice(&data2);
+
+        let mut decoder = RleV2Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&combined));
+
+        // Skip entire first block
+        decoder.skip(5)?;
+
+        // Decode from second block
+        let mut batch = vec![0; 3];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![200, 200, 200]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_values_across_blocks() -> Result<()> {
+        // Generate test data using encoder
+        let mut encoder = RleV2Encoder::<_, SignedEncoding>::new();
+
+        // Block 1: 5 values of 100
+        for _ in 0..5 {
+            encoder.write_one(100);
+        }
+        encoder.flush();
+
+        // Block 2: 5 values of 200
+        for _ in 0..5 {
+            encoder.write_one(200);
+        }
+        encoder.flush();
+
+        // Block 3: 5 values of 300
+        for _ in 0..5 {
+            encoder.write_one(300);
+        }
+        encoder.flush();
+
+        let data = encoder.take_inner();
+        let mut decoder = RleV2Decoder::<i32, _, SignedEncoding>::new(Cursor::new(&data));
+
+        // Skip 7 values (entire first block + 2 from second)
+        decoder.skip(7)?;
+
+        // Next value should be from second block
+        let mut batch = vec![0; 1];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![200]);
+
+        // Skip 2 more (rest of second block)
+        decoder.skip(2)?;
+
+        // Decode from third block
+        let mut batch = vec![0; 3];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![300, 300, 300]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_values_direct_encoding() -> Result<()> {
+        // Direct encoding: 4 values with specific bit width
+        let data = [0x5e, 0x03, 0x5c, 0xa1, 0xab, 0x1e, 0xde, 0xad, 0xbe, 0xef];
+
+        let mut decoder = RleV2Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&data));
+
+        // Decode first 2
+        let mut batch = vec![0; 2];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![23713, 43806]);
+
+        // Skip 1
+        decoder.skip(1)?;
+
+        // Decode last one
+        let mut batch = vec![0; 1];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![48879]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_values_delta_encoding() -> Result<()> {
+        // Delta encoding: sequence with fixed delta
+        let data = [0xc6, 0x09, 0x02, 0x02, 0x22, 0x42, 0x42, 0x46];
+
+        let mut decoder = RleV2Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&data));
+
+        // Skip first 5 values
+        decoder.skip(5)?;
+
+        // Decode next 3
+        let mut batch = vec![0; 3];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![13, 17, 19]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_values_patched_base() -> Result<()> {
+        // PatchedBase encoding: with patches
+        let data = [
+            0x8e, 0x09, 0x2b, 0x21, 0x07, 0xd0, 0x1e, 0x00, 0x14, 0x70, 0x28, 0x32, 0x3c, 0x46,
+            0x50, 0x5a, 0xfc, 0xe8,
+        ];
+
+        let mut decoder = RleV2Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&data));
+
+        // Skip first 3 values
+        decoder.skip(3)?;
+
+        // Decode next value (should be the patched one)
+        let mut batch = vec![0; 1];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![1000000]);
+
+        // Skip 2 more
+        decoder.skip(2)?;
+
+        // Decode next 3
+        let mut batch = vec![0; 3];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![2060, 2070, 2080]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_all_values() -> Result<()> {
+        // Test skipping all values in the stream
+        let mut encoder = RleV2Encoder::<_, SignedEncoding>::new();
+        for _ in 0..5 {
+            encoder.write_one(10);
+        }
+        encoder.flush();
+        for _ in 0..5 {
+            encoder.write_one(20);
+        }
+        encoder.flush();
+        let data = encoder.take_inner();
+
+        let mut decoder = RleV2Decoder::<i32, _, SignedEncoding>::new(Cursor::new(&data));
+
+        // Skip all 10 values
+        decoder.skip(10)?;
+
+        // Try to decode should result in empty read (no more data)
+        let mut batch = vec![0; 1];
+        let result = decoder.decode(&mut batch);
+        // EOF is acceptable when stream is exhausted
+        assert!(result.is_err() || batch[0] == 0);
+
+        Ok(())
     }
 
     proptest! {

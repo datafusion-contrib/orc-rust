@@ -20,12 +20,16 @@ use bytes::{BufMut, BytesMut};
 use snafu::ResultExt;
 
 use crate::{
-    error::{IoSnafu, Result},
+    error::{IoSnafu, OutOfSpecSnafu, Result},
     memory::EstimateMemory,
 };
 use std::io::Read;
 
-use super::{rle::GenericRle, util::read_u8, PrimitiveValueEncoder};
+use super::{
+    rle::GenericRle,
+    util::{read_u8, try_read_u8},
+    PrimitiveValueEncoder,
+};
 
 const MAX_LITERAL_LENGTH: usize = 128;
 const MIN_REPEAT_LENGTH: usize = 3;
@@ -241,6 +245,79 @@ impl<R: Read> GenericRle<i8> for ByteRleDecoder<R> {
         }
         Ok(())
     }
+
+    fn skip_values(&mut self, n: usize) -> Result<()> {
+        let mut remaining = n;
+
+        // Try to skip from the internal buffer first
+        let available_count = self.available().len();
+        if available_count >= remaining {
+            self.advance(remaining);
+            return Ok(());
+        }
+
+        // Buffer insufficient, consume what's available
+        self.advance(available_count);
+        remaining -= available_count;
+
+        // Skip by reading headers and efficiently skipping blocks
+        while remaining > 0 {
+            // Read header to determine the next batch size
+            let header = match try_read_u8(&mut self.reader)? {
+                Some(byte) => byte,
+                None => {
+                    // Stream ended but still have remaining values to skip
+                    return OutOfSpecSnafu {
+                        msg: "not enough values to skip in Byte RLE",
+                    }
+                    .fail();
+                }
+            };
+
+            if header < 0x80 {
+                // Run of repeated value
+                let length = header as usize + MIN_REPEAT_LENGTH;
+
+                if length <= remaining {
+                    // Skip entire run, only read value byte but don't store
+                    read_u8(&mut self.reader)?;
+                    remaining -= length;
+                } else {
+                    // Run exceeds remaining count, decode to buffer then skip from buffer
+                    let value = read_u8(&mut self.reader)?;
+                    self.leftovers.clear();
+                    self.index = 0;
+                    self.leftovers.extend(std::iter::repeat(value).take(length));
+                    self.advance(remaining);
+                    remaining = 0;
+                }
+            } else {
+                // List of values
+                let length = 0x100 - header as usize;
+
+                if length <= remaining {
+                    // Skip entire list, read but don't store
+                    let mut discard_buffer = vec![0u8; length];
+                    self.reader
+                        .read_exact(&mut discard_buffer)
+                        .context(IoSnafu)?;
+                    remaining -= length;
+                } else {
+                    // List exceeds remaining count, decode to buffer then skip from buffer
+                    self.leftovers.clear();
+                    self.index = 0;
+                    self.leftovers.resize(length, 0);
+                    self.reader
+                        .read_exact(&mut self.leftovers)
+                        .context(IoSnafu)?;
+                    self.advance(remaining);
+                    remaining = 0;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +353,101 @@ mod tests {
         let data = [0xfe, 0x44, 0x45];
         let expected = [0x44, 0x45];
         test_helper(&data, &expected);
+    }
+
+    #[test]
+    fn test_skip_values() -> Result<()> {
+        // Test 1: Skip from buffer (buffer is sufficient)
+        let data = [0x61u8, 0x07]; // Run: 100 7s (header=0x61=97, length=97+3=100, value=0x07)
+        let mut decoder = ByteRleDecoder::new(Cursor::new(&data));
+
+        // Decode some to buffer
+        let mut batch = vec![0; 10];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![7; 10]);
+
+        // Skip 5 from buffer (buffer still has 90)
+        decoder.skip(5)?;
+
+        // Continue decoding to verify position is correct
+        let mut batch = vec![0; 5];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![7; 5]);
+
+        // Test 2: Skip entire Run (length <= remaining)
+        let data = [0x61u8, 0x07]; // Run: 100 7s
+        let mut decoder = ByteRleDecoder::new(Cursor::new(&data));
+
+        // Skip entire run
+        decoder.skip(100)?;
+
+        // Should reach stream end
+        let mut batch = vec![0; 1];
+        let result = decoder.decode(&mut batch);
+        assert!(result.is_err()); // Expect error, because there is no more data
+
+        // Test 3: Skip partial Run (length > remaining)
+        let data = [0x61u8, 0x07]; // Run: 100 7s
+        let mut decoder = ByteRleDecoder::new(Cursor::new(&data));
+
+        // Skip 50
+        decoder.skip(50)?;
+
+        // Decode next 10
+        let mut batch = vec![0; 10];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![7; 10]);
+
+        // Test 4: Skip entire Literals (length <= remaining)
+        let data = [0xfeu8, 0x44, 0x45]; // Literals: [0x44, 0x45]
+        let mut decoder = ByteRleDecoder::new(Cursor::new(&data));
+
+        // Skip all 2
+        decoder.skip(2)?;
+
+        // Should reach stream end
+        let mut batch = vec![0; 1];
+        let result = decoder.decode(&mut batch);
+        assert!(result.is_err());
+
+        // Test 5: Skip partial Literals (length > remaining)
+        // 0xfb means length = 256 - 251 = 5
+        let data = [0xfbu8, 0x01, 0x02, 0x03, 0x04, 0x05]; // Literals: [1,2,3,4,5]
+        let mut decoder = ByteRleDecoder::new(Cursor::new(&data));
+
+        // Skip first 2
+        decoder.skip(2)?;
+
+        // Decode remaining 3
+        let mut batch = vec![0; 3];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![3, 4, 5]);
+
+        // Test 6: Skip across multiple blocks
+        // Run: 10 zeros (header=0x07, length=7+3=10, value=0x00)
+        // Literals: [11, 12, 13] (header=0xfd, length=256-253=3)
+        // Run: 20 fives (header=0x11, length=17+3=20, value=0x05)
+        let data = [
+            0x07, 0x00, // Run: 10 zeros
+            0xfdu8, 0x0b, 0x0c, 0x0d, // Literals: [11, 12, 13]
+            0x11, 0x05, // Run: 20 fives
+        ];
+        let mut decoder = ByteRleDecoder::new(Cursor::new(&data));
+
+        // Skip first 12 values (all 10 from run + 2 from literals)
+        decoder.skip(12)?;
+
+        // Next value should be 13 (last literal)
+        let mut batch = vec![0; 1];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![13]);
+
+        // Next values should be 5s from the run
+        let mut batch = vec![0; 5];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![5; 5]);
+
+        Ok(())
     }
 
     fn roundtrip_byte_rle_helper(values: &[i8]) -> Result<Vec<i8>> {

@@ -163,18 +163,18 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
     fn skip_values(&mut self, n: usize) -> Result<()> {
         let mut remaining = n;
 
-        // Try to skip from the internal buffer, return if sufficient
+        // Try to skip from the internal buffer first
         let available_count = self.available().len();
         if available_count >= remaining {
             self.advance(remaining);
             return Ok(());
         }
 
-        // Buffer not sufficient, consume all values from buffer first
+        // Buffer insufficient, consume what's available
         self.advance(available_count);
         remaining -= available_count;
 
-        // Process by reading headers until enough values are skipped
+        // Skip by reading headers and efficiently skipping blocks
         while remaining > 0 {
             // Read header to determine the next batch type and size
             match EncodingType::from_header(&mut self.reader)? {
@@ -218,7 +218,7 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
                 None => {
                     // Stream ended but still have remaining values to skip
                     return OutOfSpecSnafu {
-                        msg: "not enough values to skip",
+                        msg: "not enough values to skip in RLE v1",
                     }
                     .fail();
                 }
@@ -470,8 +470,6 @@ mod tests {
 
     #[test]
     fn test_skip_values() -> Result<()> {
-        use crate::encoding::PrimitiveValueDecoder;
-
         // Test 1: Skip from buffer (buffer is sufficient)
         let encoded = [0x61, 0x00, 0x07]; // Run: 100 7s
         let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
