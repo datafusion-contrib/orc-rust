@@ -151,8 +151,81 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
             Some(EncodingType::Run { length, delta }) => {
                 read_run::<_, _, S>(&mut self.reader, &mut self.decoded_ints, length, delta)
             }
-            None => Ok(()),
+            None => {
+                return OutOfSpecSnafu {
+                    msg: "not enough values to decode",
+                }
+                .fail();
+            }
         }
+    }
+
+    fn skip_values(&mut self, n: usize) -> Result<()> {
+        let mut remaining = n;
+
+        // Try to skip from the internal buffer, return if sufficient
+        let available_count = self.available().len();
+        if available_count >= remaining {
+            self.advance(remaining);
+            return Ok(());
+        }
+
+        // Buffer not sufficient, consume all values from buffer first
+        self.advance(available_count);
+        remaining -= available_count;
+
+        // Process by reading headers until enough values are skipped
+        while remaining > 0 {
+            // Read header to determine the next batch type and size
+            match EncodingType::from_header(&mut self.reader)? {
+                Some(EncodingType::Literals { length }) => {
+                    // Check if within skip range
+                    if length <= remaining {
+                        // Skip entire literal sequence, only read and discard varints
+                        for _ in 0..length {
+                            read_varint_zigzagged::<N, _, S>(&mut self.reader)?;
+                        }
+                        remaining -= length;
+                    } else {
+                        // Literals exceed remaining count, decode to buffer then skip from buffer
+                        self.decoded_ints.clear();
+                        self.current_head = 0;
+                        read_literals::<_, _, S>(&mut self.reader, &mut self.decoded_ints, length)?;
+                        self.advance(remaining);
+                        remaining = 0;
+                    }
+                }
+                Some(EncodingType::Run { length, delta }) => {
+                    // Check if within skip range
+                    if length <= remaining {
+                        // Skip entire run, only read base value without computing sequence
+                        read_varint_zigzagged::<N, _, S>(&mut self.reader)?;
+                        remaining -= length;
+                    } else {
+                        // Run exceeds remaining count, decode to buffer then skip from buffer
+                        self.decoded_ints.clear();
+                        self.current_head = 0;
+                        read_run::<_, _, S>(
+                            &mut self.reader,
+                            &mut self.decoded_ints,
+                            length,
+                            delta,
+                        )?;
+                        self.advance(remaining);
+                        remaining = 0;
+                    }
+                }
+                None => {
+                    // Stream ended but still have remaining values to skip
+                    return OutOfSpecSnafu {
+                        msg: "not enough values to skip",
+                    }
+                    .fail();
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -392,6 +465,91 @@ mod tests {
             0xfb, 0x02, 0x03, 0x06, 0x07, 0x0b, 0x00, 0x01, 0x01, 0xfe, 0x00, 0x80, 0x02,
         ];
         test_helper(&original, &encoded);
+        Ok(())
+    }
+
+    #[test]
+    fn test_skip_values() -> Result<()> {
+        use crate::encoding::PrimitiveValueDecoder;
+
+        // Test 1: Skip from buffer (buffer is sufficient)
+        let encoded = [0x61, 0x00, 0x07]; // Run: 100 7s
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
+
+        // Decode some to buffer
+        let mut batch = vec![0; 10];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![7; 10]);
+
+        // Skip 5 from buffer (buffer still has 90)
+        decoder.skip(5)?;
+
+        // Continue decoding to verify position is correct
+        let mut batch = vec![0; 5];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![7; 5]);
+
+        // Test 2: Skip entire Run (length <= remaining)
+        let encoded = [0x61, 0x00, 0x07]; // Run: 100 7s
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
+
+        // Skip entire run
+        decoder.skip(100)?;
+
+        // Should reach stream end
+        let mut batch = vec![0; 1];
+        let result = decoder.decode(&mut batch);
+        assert!(result.is_err()); // Expect error, because there is no more data
+
+        // Test 3: Skip partial Run (length > remaining)
+        let encoded = [0x61, 0x00, 0x07]; // Run: 100 7s
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
+
+        // Skip 50
+        decoder.skip(50)?;
+
+        // Decode next 10
+        let mut batch = vec![0; 10];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![7; 10]);
+
+        // Test 4: Skip entire Literals (length <= remaining)
+        let encoded = [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb]; // Literals: [2,3,6,7,11]
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
+
+        // Skip all 5
+        decoder.skip(5)?;
+
+        // Should reach stream end
+        let mut batch = vec![0; 1];
+        let result = decoder.decode(&mut batch);
+        assert!(result.is_err());
+
+        // Test 5: Skip partial Literals (length > remaining)
+        let encoded = [0xfb, 0x02, 0x03, 0x06, 0x07, 0xb]; // Literals: [2,3,6,7,11]
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
+
+        // Skip first 2
+        decoder.skip(2)?;
+
+        // Decode remaining 3
+        let mut batch = vec![0; 3];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![6, 7, 11]);
+
+        // Test 6: Skip across multiple headers
+        // Encoded: 150 decreasing numbers (150, 149, ..., 1)
+        let encoded = [0x7f, 0xff, 0x96, 0x01, 0x11, 0xff, 0x14];
+        let mut decoder = RleV1Decoder::<i64, _, UnsignedEncoding>::new(Cursor::new(&encoded));
+
+        // Skip first 100
+        decoder.skip(100)?;
+
+        // Decode next 10 (should be 50, 49, ..., 41)
+        let mut batch = vec![0; 10];
+        decoder.decode(&mut batch)?;
+        assert_eq!(batch, vec![50, 49, 48, 47, 46, 45, 44, 43, 42, 41]);
+
         Ok(())
     }
 }
