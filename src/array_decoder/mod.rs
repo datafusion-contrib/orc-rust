@@ -318,12 +318,26 @@ impl Iterator for NaiveStripeDecoder {
                     };
 
                     if is_skip {
+                        // Calculate how many rows we can actually skip in this stripe
+                        let remaining = self.number_of_rows - self.index;
+                        let actual_skip = row_count.min(remaining);
+                        
+                        // If we can't skip any rows, move to next selector
+                        if actual_skip == 0 {
+                            self.selection_index += 1;
+                            continue;
+                        }
+                        
                         // Skip these rows by advancing the index
-                        self.index += row_count;
-                        self.selection_index += 1;
+                        self.index += actual_skip;
+                        
+                        // If we skipped all requested rows, move to next selector
+                        if actual_skip >= row_count {
+                            self.selection_index += 1;
+                        }
 
-                        // Decode and discard the skipped rows to advance the internal decoders
-                        if let Err(e) = self.skip_rows(row_count) {
+                        // Skip these rows by calling skip_rows
+                        if let Err(e) = self.skip_rows(actual_skip) {
                             return Some(Err(e));
                         }
                     } else {

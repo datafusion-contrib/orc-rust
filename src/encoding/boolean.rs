@@ -56,7 +56,44 @@ impl<R: Read> BooleanDecoder<R> {
 
 impl<R: Read> PrimitiveValueDecoder<bool> for BooleanDecoder<R> {
     fn skip(&mut self, n: usize) -> Result<()> {
-        self.decoder.skip(n)?;
+        let mut remaining_bits = n;
+
+        // First consume from any buffered bits in `data`
+        if self.bits_in_data > 0 {
+            let take = remaining_bits.min(self.bits_in_data);
+            // Advance by shifting left (MSB-first)
+            self.data <<= take;
+            self.bits_in_data -= take;
+            remaining_bits -= take;
+        }
+
+        if remaining_bits == 0 {
+            return Ok(());
+        }
+
+        // Skip whole bytes directly from byte RLE
+        let whole_bytes = remaining_bits / 8;
+        if whole_bytes > 0 {
+            self.decoder.skip(whole_bytes)?;
+            remaining_bits -= whole_bytes * 8;
+        }
+
+        // Skip remaining bits by decoding one more byte and positioning inside it
+        if remaining_bits > 0 {
+            let mut byte = [0i8; 1];
+            match self.decoder.decode(&mut byte) {
+                Ok(_) => {
+                    self.data = (byte[0] as u8) << remaining_bits;
+                    self.bits_in_data = 8 - remaining_bits;
+                }
+                Err(e) => {
+                    // If we can't read more data, we're at the end of the stream
+                    // This means we tried to skip more than available
+                    return Err(e);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -195,15 +232,88 @@ mod tests {
 
     #[test]
     fn test_skip_all() {
+        // Literal list of exactly 1 byte -> 8 bits
+        let data = [0xffu8, 0x00u8];
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Skip all 8 bits
+        decoder.skip(8).unwrap();
+
+        // Next decode must error (EOF)
+        let mut batch = vec![true; 1];
+        let result = decoder.decode(&mut batch);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_skip_partial_bits() {
+        // Test skipping partial bits within a byte
+        let data = [0xfeu8, 0b01000100, 0b01000101]; // 16 bits of data
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Skip first 3 bits (should leave 5 bits in the first byte)
+        decoder.skip(3).unwrap();
+
+        // Decode next 5 bits should work
+        let mut batch = vec![true; 5];
+        decoder.decode(&mut batch).unwrap();
+        // Expected: After skipping 3 bits from 0b01000100, we get 0b000100
+        // Which is [false, false, true, false, false]
+        assert_eq!(batch, vec![false, false, true, false, false]);
+    }
+
+    #[test]
+    fn test_skip_cross_byte_boundary() {
+        // Test skipping across byte boundaries
+        let data = [0xfeu8, 0b01000100, 0b01000101]; // 16 bits of data
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Skip 6 bits (should consume first byte and 2 bits of second byte)
+        decoder.skip(6).unwrap();
+
+        // Decode remaining bits should work
+        let mut batch = vec![true; 4];
+        decoder.decode(&mut batch).unwrap();
+        // Expected: 0b0001 -> [false, false, false, true]
+        assert_eq!(batch, vec![false, false, false, true]);
+    }
+
+    #[test]
+    fn test_skip_zero() {
         let data = [0x61u8, 0x00]; // 100 false values
         let mut decoder = BooleanDecoder::new(data.as_ref());
 
-        // Skip all 100 values
-        decoder.skip(100).unwrap();
+        // Skip 0 values should be a no-op
+        decoder.skip(0).unwrap();
 
-        // Try to decode should fail (EOF)
-        let mut batch = vec![false; 1];
-        let result = decoder.decode(&mut batch);
+        // Decode should still work normally
+        let mut batch = vec![true; 10];
+        decoder.decode(&mut batch).unwrap();
+        assert_eq!(batch, vec![false; 10]);
+    }
+
+    #[test]
+    fn test_skip_exact_byte() {
+        let data = [0x61u8, 0x00]; // 100 false values
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Skip exactly 8 bits (1 byte)
+        decoder.skip(8).unwrap();
+
+        // Should be able to continue decoding
+        let mut batch = vec![true; 10];
+        decoder.decode(&mut batch).unwrap();
+        assert_eq!(batch, vec![false; 10]);
+    }
+
+    #[test]
+    fn test_skip_more_than_available() {
+        // Literal list of exactly 1 byte -> 8 bits
+        let data = [0xffu8, 0x00u8];
+        let mut decoder = BooleanDecoder::new(data.as_ref());
+
+        // Try to skip more than available should fail
+        let result = decoder.skip(9);
         assert!(result.is_err());
     }
 }
