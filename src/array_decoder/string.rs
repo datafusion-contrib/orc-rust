@@ -155,6 +155,28 @@ impl<T: ByteArrayType> ArrayBatchDecoder for GenericByteArrayDecoder<T> {
         let array = Arc::new(array) as ArrayRef;
         Ok(array)
     }
+
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        use crate::array_decoder::skip_present_and_get_non_null_count;
+
+        let non_null_count =
+            skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
+
+        // Decode lengths to determine how many bytes to skip
+        let mut lengths = vec![0; non_null_count];
+        self.lengths.decode(&mut lengths)?;
+        let total_bytes: i64 = lengths.iter().sum();
+
+        // Skip the data bytes
+        // TODO: can we use the decompressor to skip the bytes?
+        std::io::copy(
+            &mut self.bytes.by_ref().take(total_bytes as u64),
+            &mut std::io::sink(),
+        )
+        .context(IoSnafu)?;
+
+        Ok(())
+    }
 }
 
 pub struct DictionaryStringArrayDecoder {
@@ -191,5 +213,9 @@ impl ArrayBatchDecoder for DictionaryStringArrayDecoder {
 
         let array = Arc::new(array);
         Ok(array)
+    }
+
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        self.indexes.skip_values(n, parent_present)
     }
 }

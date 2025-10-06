@@ -76,4 +76,19 @@ impl ArrayBatchDecoder for StructArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        use super::derive_present_vec;
+
+        // Derive the combined present buffer like in next_batch
+        let present = derive_present_vec(&mut self.present, parent_present, n).transpose()?;
+
+        // Skip values in all child decoders
+        // Pass the present buffer to children so they know which values to skip
+        for decoder in &mut self.decoders {
+            decoder.skip_values(n, present.as_ref())?;
+        }
+
+        Ok(())
+    }
 }

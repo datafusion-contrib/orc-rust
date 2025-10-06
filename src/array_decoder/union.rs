@@ -134,4 +134,30 @@ impl ArrayBatchDecoder for UnionArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        use super::derive_present_vec;
+
+        // Derive the combined present buffer like in next_batch
+        let present = derive_present_vec(&mut self.present, parent_present, n).transpose()?;
+
+        // Determine how many non-null values we need to skip from tags stream
+        let non_null_count = if let Some(present) = &present {
+            present.len() - present.null_count()
+        } else {
+            n
+        };
+
+        // Skip tags (only non-null values have tags)
+        self.tags.skip(non_null_count)?;
+
+        // Skip values in all variant decoders
+        // For sparse union, each variant stores n values regardless of which variant is active
+        // Pass the present buffer to children
+        for decoder in &mut self.variants {
+            decoder.skip_values(n, present.as_ref())?;
+        }
+
+        Ok(())
+    }
 }

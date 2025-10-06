@@ -102,4 +102,22 @@ impl ArrayBatchDecoder for MapArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        use super::skip_present_and_get_non_null_count;
+
+        let non_null_count =
+            skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
+
+        // Decode lengths to determine how many entries to skip
+        let mut lengths = vec![0; non_null_count];
+        self.lengths.decode(&mut lengths)?;
+        let total_length: i64 = lengths.iter().sum();
+
+        // Skip both keys and values (they don't have parent_present from map)
+        self.keys.skip_values(total_length as usize, None)?;
+        self.values.skip_values(total_length as usize, None)?;
+
+        Ok(())
+    }
 }

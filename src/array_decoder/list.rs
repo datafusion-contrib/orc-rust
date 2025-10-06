@@ -85,4 +85,21 @@ impl ArrayBatchDecoder for ListArrayDecoder {
         let array = Arc::new(array);
         Ok(array)
     }
+
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        use super::skip_present_and_get_non_null_count;
+
+        let non_null_count =
+            skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
+
+        // Decode lengths to determine how many child values to skip
+        let mut lengths = vec![0; non_null_count];
+        self.lengths.decode(&mut lengths)?;
+        let total_length: i64 = lengths.iter().sum();
+
+        // Skip the child values (children don't have parent_present from list)
+        self.inner.skip_values(total_length as usize, None)?;
+
+        Ok(())
+    }
 }

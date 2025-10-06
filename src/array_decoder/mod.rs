@@ -77,10 +77,11 @@ pub trait ArrayBatchDecoder: Send {
     ) -> Result<ArrayRef>;
 
     /// Skip the next `n` values without decoding them, failing if it cannot skip the enough values.
-    fn skip_values(&mut self, n: usize) -> Result<()> {
-        // TODO: implement
-        Ok(())
-    }
+    /// If parent nested type (e.g. Struct) indicates a null in it's PRESENT stream,
+    /// then the child doesn't have a value (similar to other nullability). So we need
+    /// to take care to insert these null values as Arrow requires the child to hold
+    /// data in the null slot of the child.
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()>;
 }
 
 struct PrimitiveArrayDecoder<T: ArrowPrimitiveType> {
@@ -130,22 +131,10 @@ impl<T: ArrowPrimitiveType> ArrayBatchDecoder for PrimitiveArrayDecoder<T> {
         Ok(array)
     }
 
-    fn skip_rows(&mut self, row_count: usize) -> Result<()> {
-        // If we have a present stream, we need to decode it to know how many
-        // non-null values to skip in the data stream
-        let non_null_count = if let Some(ref mut present) = self.present {
-            let mut present_buffer = vec![false; row_count];
-            present.inner.decode(&mut present_buffer)?;
-            // Count non-null values (where present is true)
-            present_buffer.iter().filter(|&&v| v).count()
-        } else {
-            // No nulls, so all rows have values
-            row_count
-        };
-
-        // Skip the data stream for non-null values only
-        self.iter.skip(non_null_count)?;
-        Ok(())
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        let non_null_count =
+            skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
+        self.iter.skip(non_null_count)
     }
 }
 
@@ -193,22 +182,10 @@ impl ArrayBatchDecoder for BooleanArrayDecoder {
         Ok(Arc::new(array))
     }
 
-    fn skip_rows(&mut self, row_count: usize) -> Result<()> {
-        // If we have a present stream, we need to decode it to know how many
-        // non-null values to skip in the data stream
-        let non_null_count = if let Some(ref mut present) = self.present {
-            let mut present_buffer = vec![false; row_count];
-            present.inner.decode(&mut present_buffer)?;
-            // Count non-null values (where present is true)
-            present_buffer.iter().filter(|&&v| v).count()
-        } else {
-            // No nulls, so all rows have values
-            row_count
-        };
-
-        // Skip the data stream for non-null values only
-        self.iter.skip(non_null_count)?;
-        Ok(())
+    fn skip_values(&mut self, n: usize, parent_present: Option<&NullBuffer>) -> Result<()> {
+        let non_null_count =
+            skip_present_and_get_non_null_count(&mut self.present, parent_present, n)?;
+        self.iter.skip(non_null_count)
     }
 }
 
@@ -271,6 +248,42 @@ fn derive_present_vec(
     match present {
         Some(Ok(present)) if present.null_count() > 0 => Some(Ok(present)),
         _ => None,
+    }
+}
+
+/// Skip n values and return the non-null count for the data stream
+fn skip_present_and_get_non_null_count(
+    present: &mut Option<PresentDecoder>,
+    parent_present: Option<&NullBuffer>,
+    n: usize,
+) -> Result<usize> {
+    match (present, parent_present) {
+        (Some(present), Some(parent_present)) => {
+            // Parent has nulls, so we need to decode parent present to know how many
+            // of our present values to skip
+            let non_null_in_parent = parent_present.len() - parent_present.null_count();
+
+            // Skip our present values for non-null parents and count non-nulls
+            let mut our_present = vec![false; non_null_in_parent];
+            present.inner.decode(&mut our_present)?;
+            let our_non_null_count = our_present.iter().filter(|&&v| v).count();
+
+            Ok(our_non_null_count)
+        }
+        (Some(present), None) => {
+            // No parent present, skip n values and count non-nulls
+            let mut present_values = vec![false; n];
+            present.inner.decode(&mut present_values)?;
+            Ok(present_values.iter().filter(|&&v| v).count())
+        }
+        (None, Some(parent_present)) => {
+            // No our present stream, all non-null parents have data
+            Ok(parent_present.len() - parent_present.null_count())
+        }
+        (None, None) => {
+            // No nulls at all, all n values have data
+            Ok(n)
+        }
     }
 }
 
@@ -555,11 +568,12 @@ impl NaiveStripeDecoder {
         })
     }
 
-    /// Skip the specified number of rows by calling skip_rows on each decoder
+    /// Skip the specified number of rows by calling skip_values on each decoder
     fn skip_rows(&mut self, count: usize) -> Result<()> {
-        // Call skip_rows on each decoder to efficiently skip rows
+        // Call skip_values on each decoder to efficiently skip rows
+        // Top-level decoders don't have parent_present
         for decoder in &mut self.decoders {
-            decoder.skip_rows(count)?;
+            decoder.skip_values(count, None)?;
         }
         Ok(())
     }
