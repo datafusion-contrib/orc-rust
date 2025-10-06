@@ -151,12 +151,10 @@ impl<N: NInt, R: Read, S: EncodingSign> GenericRle<N> for RleV1Decoder<N, R, S> 
             Some(EncodingType::Run { length, delta }) => {
                 read_run::<_, _, S>(&mut self.reader, &mut self.decoded_ints, length, delta)
             }
-            None => {
-                return OutOfSpecSnafu {
-                    msg: "not enough values to decode",
-                }
-                .fail();
+            None => OutOfSpecSnafu {
+                msg: "not enough values to decode",
             }
+            .fail(),
         }
     }
 

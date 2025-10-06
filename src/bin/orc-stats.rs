@@ -35,48 +35,48 @@ fn print_column_stats(col_stats: &ColumnStatistics) {
         match tstats {
             orc_rust::statistics::TypeStatistics::Integer { min, max, sum } => {
                 println!("* Data type Integer");
-                println!("* Minimum: {}", min);
-                println!("* Maximum: {}", max);
+                println!("* Minimum: {min}");
+                println!("* Maximum: {max}");
                 if let Some(sum) = sum {
-                    println!("* Sum: {}", sum);
+                    println!("* Sum: {sum}");
                 }
             }
             orc_rust::statistics::TypeStatistics::Double { min, max, sum } => {
                 println!("* Data type Double");
-                println!("* Minimum: {}", min);
-                println!("* Maximum: {}", max);
+                println!("* Minimum: {min}");
+                println!("* Maximum: {max}");
                 if let Some(sum) = sum {
-                    println!("* Sum: {}", sum);
+                    println!("* Sum: {sum}");
                 }
             }
             orc_rust::statistics::TypeStatistics::String { min, max, sum } => {
                 println!("* Data type String");
-                println!("* Minimum: {}", min);
-                println!("* Maximum: {}", max);
-                println!("* Sum: {}", sum);
+                println!("* Minimum: {min}");
+                println!("* Maximum: {max}");
+                println!("* Sum: {sum}");
             }
             orc_rust::statistics::TypeStatistics::Bucket { true_count } => {
                 println!("* Data type Bucket");
-                println!("* True count: {}", true_count);
+                println!("* True count: {true_count}");
             }
             orc_rust::statistics::TypeStatistics::Decimal { min, max, sum } => {
                 println!("* Data type Decimal");
-                println!("* Minimum: {}", min);
-                println!("* Maximum: {}", max);
-                println!("* Sum: {}", sum);
+                println!("* Minimum: {min}");
+                println!("* Maximum: {max}");
+                println!("* Sum: {sum}");
             }
             orc_rust::statistics::TypeStatistics::Date { min, max } => {
                 println!("* Data type Date");
                 if let Some(dt) = date32_to_datetime(*min) {
-                    println!("* Minimum: {}", dt);
+                    println!("* Minimum: {dt}");
                 }
                 if let Some(dt) = date32_to_datetime(*max) {
-                    println!("* Maximum: {}", dt);
+                    println!("* Maximum: {dt}");
                 }
             }
             orc_rust::statistics::TypeStatistics::Binary { sum } => {
                 println!("* Data type Binary");
-                println!("* Sum: {}", sum);
+                println!("* Sum: {sum}");
             }
             orc_rust::statistics::TypeStatistics::Timestamp {
                 min,
@@ -85,13 +85,13 @@ fn print_column_stats(col_stats: &ColumnStatistics) {
                 max_utc,
             } => {
                 println!("* Data type Timestamp");
-                println!("* Minimum: {}", min);
-                println!("* Maximum: {}", max);
+                println!("* Minimum: {min}");
+                println!("* Maximum: {max}");
                 if let Some(ts) = timestamp_ms_to_datetime(*min_utc) {
-                    println!("* Minimum UTC: {}", ts);
+                    println!("* Minimum UTC: {ts}");
                 }
                 if let Some(ts) = timestamp_ms_to_datetime(*max_utc) {
-                    println!("* Maximum UTC: {}", ts);
+                    println!("* Maximum UTC: {ts}");
                 }
             }
             orc_rust::statistics::TypeStatistics::Collection {
@@ -100,9 +100,9 @@ fn print_column_stats(col_stats: &ColumnStatistics) {
                 total_children,
             } => {
                 println!("* Data type Collection");
-                println!("* Minimum children: {}", min_children);
-                println!("* Maximum children: {}", max_children);
-                println!("* Total children: {}", total_children);
+                println!("* Minimum children: {min_children}");
+                println!("* Maximum children: {max_children}");
+                println!("* Total children: {total_children}");
             }
         }
     }
