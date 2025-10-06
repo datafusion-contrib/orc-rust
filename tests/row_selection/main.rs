@@ -393,3 +393,272 @@ async fn test_row_selection_async() {
 
     assert_eq!(total_rows, 3);
 }
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_select_all() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    let selection = RowSelection::select_all(5);
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 5);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_skip_all() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    let selection = RowSelection::skip_all(5);
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 0);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_with_consecutive_ranges() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Select rows at indices 0-1 and 3-4 (skip row 2)
+    let selection = RowSelection::from_consecutive_ranges(vec![0..2, 3..5].into_iter(), 5);
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 4);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_select_first_only() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Select only first row
+    let selection = vec![RowSelector::select(1), RowSelector::skip(4)].into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 1);
+
+    let expected = [
+        "+-----+------+------------+---+-----+-------+--------------------+------------------------+-----------+---------------+------------+----------------+---------------+-------------------+--------------+---------------+---------------+-------------------------+-------------+----------------+",
+        "| a   | b    | str_direct | d | e   | f     | int_short_repeated | int_neg_short_repeated | int_delta | int_neg_delta | int_direct | int_neg_direct | bigint_direct | bigint_neg_direct | bigint_other | utf8_increase | utf8_decrease | timestamp_simple        | date_simple | tinyint_simple |",
+        "+-----+------+------------+---+-----+-------+--------------------+------------------------+-----------+---------------+------------+----------------+---------------+-------------------+--------------+---------------+---------------+-------------------------+-------------+----------------+",
+        "| 1.0 | true | a          | a | ddd | aaaaa | 5                  | -5                     | 1         | 5             | 1          | -1             | 1             | -1                | 5            | a             | eeeee         | 2023-04-01T20:15:30.002 | 2023-04-01  | -1             |",
+        "+-----+------+------------+---+-----+-------+--------------------+------------------------+-----------+---------------+------------+----------------+---------------+-------------------+--------------+---------------+---------------+-------------------------+-------------+----------------+",
+    ];
+    assert_batches_eq(&batches, &expected);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_select_last_only() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Skip first 4 rows, select last row
+    let selection = vec![RowSelector::skip(4), RowSelector::select(1)].into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 1);
+
+    let expected = [
+        "+-----+-------+------------+-----+---+-------+--------------------+------------------------+-----------+---------------+------------+----------------+---------------+-------------------+--------------+---------------+---------------+---------------------+-------------+----------------+",
+        "| a   | b     | str_direct | d   | e | f     | int_short_repeated | int_neg_short_repeated | int_delta | int_neg_delta | int_direct | int_neg_direct | bigint_direct | bigint_neg_direct | bigint_other | utf8_increase | utf8_decrease | timestamp_simple    | date_simple | tinyint_simple |",
+        "+-----+-------+------------+-----+---+-------+--------------------+------------------------+-----------+---------------+------------+----------------+---------------+-------------------+--------------+---------------+---------------+---------------------+-------------+----------------+",
+        "| 5.0 | false | ee         | ddd | a | ddddd | 5                  | -5                     | 5         | 1             | 2          | -2             | 2             | -2                | 5            | eeeee         | a             | 2023-03-01T00:00:00 | 2023-03-01  | -127           |",
+        "+-----+-------+------------+-----+---+-------+--------------------+------------------------+-----------+---------------+------------+----------------+---------------+-------------------+--------------+---------------+---------------+---------------------+-------------+----------------+",
+    ];
+    assert_batches_eq(&batches, &expected);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_with_nested_struct() {
+    let path = basic_path("nested_struct.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Select first 2 rows and last row
+    let selection = vec![
+        RowSelector::select(2),
+        RowSelector::skip(2),
+        RowSelector::select(1),
+    ]
+    .into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 3);
+
+    let expected = [
+        "+-------------------+",
+        "| nest              |",
+        "+-------------------+",
+        "| {a: 1.0, b: true} |",
+        "| {a: 3.0, b: }     |",
+        "| {a: -3.0, b: }    |",
+        "+-------------------+",
+    ];
+    assert_batches_eq(&batches, &expected);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_with_nested_array() {
+    let path = basic_path("nested_array.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Select middle rows (index 1-2)
+    let selection = vec![
+        RowSelector::skip(1),
+        RowSelector::select(2),
+        RowSelector::skip(2),
+    ]
+    .into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 2);
+
+    let expected = [
+        "+--------------------+",
+        "| value              |",
+        "+--------------------+",
+        "| [5, , 32, 4, 15]   |",
+        "| [16, , 3, 4, 5, 6] |",
+        "+--------------------+",
+    ];
+    assert_batches_eq(&batches, &expected);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_with_large_file() {
+    // Test with a larger file that spans multiple stripes
+    let path = basic_path("string_long_long.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Skip first 1000 rows, select next 500, skip rest
+    let selection = vec![
+        RowSelector::skip(1000),
+        RowSelector::select(500),
+        RowSelector::skip(8500),
+    ]
+    .into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 500);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_empty_selection() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    // Empty selection - skip all rows
+    let selection = RowSelection::skip_all(5);
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    // Empty selection should read 0 rows
+    assert_eq!(total_rows, 0);
+}
+
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async_with_compression() {
+    // Test that row selection works with compressed files
+    let path = basic_path("string_dict_gzip.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    let selection = vec![
+        RowSelector::skip(10),
+        RowSelector::select(20),
+        RowSelector::skip(34),
+    ]
+    .into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 20);
+}
