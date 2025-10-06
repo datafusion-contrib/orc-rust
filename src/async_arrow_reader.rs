@@ -32,6 +32,7 @@ use crate::arrow_reader::Cursor;
 use crate::error::Result;
 use crate::reader::metadata::read_metadata_async;
 use crate::reader::AsyncChunkReader;
+use crate::row_selection::RowSelection;
 use crate::stripe::{Stripe, StripeMetadata};
 use crate::ArrowReaderBuilder;
 
@@ -77,6 +78,7 @@ pub struct ArrowStreamReader<R: AsyncChunkReader> {
     factory: Option<Box<StripeFactory<R>>>,
     batch_size: usize,
     schema_ref: SchemaRef,
+    row_selection: Option<RowSelection>,
     state: StreamState<R>,
 }
 
@@ -124,11 +126,17 @@ impl<R: AsyncChunkReader + 'static> StripeFactory<R> {
 }
 
 impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
-    pub(crate) fn new(cursor: Cursor<R>, batch_size: usize, schema_ref: SchemaRef) -> Self {
+    pub(crate) fn new(
+        cursor: Cursor<R>,
+        batch_size: usize,
+        schema_ref: SchemaRef,
+        row_selection: Option<RowSelection>,
+    ) -> Self {
         Self {
             factory: Some(Box::new(cursor.into())),
             batch_size,
             schema_ref,
+            row_selection,
             state: StreamState::Init,
         }
     }
@@ -171,10 +179,22 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
                 StreamState::Reading(f) => match ready!(f.poll_unpin(cx)) {
                     Ok((factory, Some(stripe))) => {
                         self.factory = Some(Box::new(factory));
-                        match NaiveStripeDecoder::new(
+
+                        // Split off the row selection for this stripe
+                        let stripe_rows = stripe.number_of_rows();
+                        let selection = self.row_selection.as_mut().and_then(|s| {
+                            if s.row_count() > 0 {
+                                Some(s.split_off(stripe_rows))
+                            } else {
+                                None
+                            }
+                        });
+
+                        match NaiveStripeDecoder::new_with_selection(
                             stripe,
                             self.schema_ref.clone(),
                             self.batch_size,
+                            selection,
                         ) {
                             Ok(decoder) => {
                                 self.state = StreamState::Decoding(Box::new(decoder));
@@ -229,6 +249,6 @@ impl<R: AsyncChunkReader + 'static> ArrowReaderBuilder<R> {
             stripe_index: 0,
             file_byte_range: self.file_byte_range,
         };
-        ArrowStreamReader::new(cursor, self.batch_size, schema_ref)
+        ArrowStreamReader::new(cursor, self.batch_size, schema_ref, self.row_selection)
     }
 }

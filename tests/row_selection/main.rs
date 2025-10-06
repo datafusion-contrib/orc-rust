@@ -21,6 +21,7 @@ use std::fs::File;
 
 use arrow::record_batch::RecordBatch;
 use arrow::util::pretty;
+use futures_util::stream::TryStreamExt;
 use orc_rust::arrow_reader::ArrowReaderBuilder;
 use orc_rust::projection::ProjectionMask;
 use orc_rust::row_selection::{RowSelection, RowSelector};
@@ -368,29 +369,27 @@ fn test_row_selection_with_compression() {
     assert_eq!(total_rows, 20);
 }
 
-// TODO: Async version doesn't support row_selection yet
-// Need to update async_arrow_reader.rs to pass row_selection to NaiveStripeDecoder
-// #[cfg(feature = "async")]
-// #[tokio::test]
-// async fn test_row_selection_async() {
-//     let path = basic_path("test.orc");
-//     let f = tokio::fs::File::open(path).await.unwrap();
-//
-//     let selection = vec![
-//         RowSelector::skip(1),
-//         RowSelector::select(3),
-//         RowSelector::skip(1),
-//     ]
-//     .into();
-//
-//     let reader = ArrowReaderBuilder::try_new_async(f)
-//         .await
-//         .unwrap()
-//         .with_row_selection(selection)
-//         .build_async();
-//
-//     let batches = reader.try_collect::<Vec<_>>().await.unwrap();
-//     let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-//
-//     assert_eq!(total_rows, 3);
-// }
+#[cfg(feature = "async")]
+#[tokio::test]
+async fn test_row_selection_async() {
+    let path = basic_path("test.orc");
+    let f = tokio::fs::File::open(path).await.unwrap();
+
+    let selection = vec![
+        RowSelector::skip(1),
+        RowSelector::select(3),
+        RowSelector::skip(1),
+    ]
+    .into();
+
+    let reader = ArrowReaderBuilder::try_new_async(f)
+        .await
+        .unwrap()
+        .with_row_selection(selection)
+        .build_async();
+
+    let batches = reader.try_collect::<Vec<_>>().await.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    assert_eq!(total_rows, 3);
+}
