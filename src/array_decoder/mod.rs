@@ -372,7 +372,7 @@ impl Iterator for NaiveStripeDecoder {
         if self.index < self.number_of_rows {
             // Handle row selection if present
             if self.row_selection.is_some() {
-                return self.next_with_row_selection();
+                self.next_with_row_selection()
             } else {
                 // No row selection - decode normally
                 let record = self

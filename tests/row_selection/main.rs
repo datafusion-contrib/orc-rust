@@ -21,10 +21,12 @@ use std::fs::File;
 
 use arrow::record_batch::RecordBatch;
 use arrow::util::pretty;
-use futures_util::stream::TryStreamExt;
 use orc_rust::arrow_reader::ArrowReaderBuilder;
 use orc_rust::projection::ProjectionMask;
 use orc_rust::row_selection::{RowSelection, RowSelector};
+
+#[cfg(feature = "async")]
+use futures_util::stream::TryStreamExt;
 
 fn basic_path(path: &str) -> String {
     let dir = env!("CARGO_MANIFEST_DIR");
