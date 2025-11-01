@@ -70,6 +70,8 @@ pub struct FileMetadata {
     column_statistics: Vec<ColumnStatistics>,
     stripes: Vec<StripeMetadata>,
     user_custom_metadata: HashMap<String, Vec<u8>>,
+    /// The maximum number of rows in each index entry (default 10,000)
+    row_index_stride: Option<u32>,
 }
 
 impl FileMetadata {
@@ -132,6 +134,7 @@ impl FileMetadata {
             column_statistics,
             stripes,
             user_custom_metadata,
+            row_index_stride: footer.row_index_stride,
         })
     }
 
@@ -157,6 +160,16 @@ impl FileMetadata {
 
     pub fn user_custom_metadata(&self) -> &HashMap<String, Vec<u8>> {
         &self.user_custom_metadata
+    }
+
+    /// Get the row index stride (rows per row group)
+    ///
+    /// Returns the number of rows per row group used for row-level indexes.
+    /// Default is 10,000 according to ORC spec.
+    ///
+    /// If `None` is returned, it means row indexes are not enabled for this file.
+    pub fn row_index_stride(&self) -> Option<usize> {
+        self.row_index_stride.map(|s| s as usize)
     }
 
     pub fn file_format_version(&self) -> &str {

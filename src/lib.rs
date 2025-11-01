@@ -60,7 +60,9 @@ mod memory;
 pub mod projection;
 #[allow(dead_code)]
 mod proto;
+pub mod predicate;
 pub mod reader;
+pub mod row_index;
 pub mod row_selection;
 pub mod schema;
 pub mod statistics;
@@ -71,5 +73,6 @@ pub use arrow_reader::{ArrowReader, ArrowReaderBuilder};
 pub use arrow_writer::{ArrowWriter, ArrowWriterBuilder};
 #[cfg(feature = "async")]
 pub use async_arrow_reader::ArrowStreamReader;
+pub use predicate::{ComparisonOp, Predicate};
 pub use row_selection::{RowSelection, RowSelector};
 pub use schema::{ArrowSchemaOptions, TimestampPrecision};
