@@ -30,9 +30,12 @@ use futures_util::FutureExt;
 use crate::array_decoder::NaiveStripeDecoder;
 use crate::arrow_reader::Cursor;
 use crate::error::Result;
+use crate::predicate::Predicate;
 use crate::reader::metadata::read_metadata_async;
 use crate::reader::AsyncChunkReader;
+use crate::row_group_filter::evaluate_predicate;
 use crate::row_selection::RowSelection;
+use crate::schema::RootDataType;
 use crate::stripe::{Stripe, StripeMetadata};
 use crate::ArrowReaderBuilder;
 
@@ -79,6 +82,9 @@ pub struct ArrowStreamReader<R: AsyncChunkReader> {
     batch_size: usize,
     schema_ref: SchemaRef,
     row_selection: Option<RowSelection>,
+    predicate: Option<Predicate>,
+    projected_data_type: RootDataType,
+    file_metadata: Arc<crate::reader::metadata::FileMetadata>,
     state: StreamState<R>,
 }
 
@@ -131,12 +137,18 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
         batch_size: usize,
         schema_ref: SchemaRef,
         row_selection: Option<RowSelection>,
+        predicate: Option<Predicate>,
+        projected_data_type: RootDataType,
+        file_metadata: Arc<crate::reader::metadata::FileMetadata>,
     ) -> Self {
         Self {
             factory: Some(Box::new(cursor.into())),
             batch_size,
             schema_ref,
             row_selection,
+            predicate,
+            projected_data_type,
+            file_metadata,
             state: StreamState::Init,
         }
     }
@@ -180,21 +192,70 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
                     Ok((factory, Some(stripe))) => {
                         self.factory = Some(Box::new(factory));
 
-                        // Split off the row selection for this stripe
                         let stripe_rows = stripe.number_of_rows();
-                        let selection = self.row_selection.as_mut().and_then(|s| {
-                            if s.row_count() > 0 {
-                                Some(s.split_off(stripe_rows))
-                            } else {
-                                None
+
+                        // Evaluate predicate if present
+                        let mut stripe_selection: Option<RowSelection> = None;
+                        if let Some(ref predicate) = self.predicate {
+                            // Try to read row indexes for this stripe
+                            match stripe.read_row_indexes(&self.file_metadata) {
+                                Ok(row_index) => {
+                                    // Evaluate predicate against row group statistics
+                                    match evaluate_predicate(
+                                        predicate,
+                                        &row_index,
+                                        &self.projected_data_type,
+                                    ) {
+                                        Ok(row_group_filter) => {
+                                            // Generate RowSelection from filter results
+                                            let rows_per_group = self
+                                                .file_metadata
+                                                .row_index_stride()
+                                                .unwrap_or(10_000);
+                                            stripe_selection =
+                                                Some(RowSelection::from_row_group_filter(
+                                                    &row_group_filter,
+                                                    rows_per_group,
+                                                    stripe_rows,
+                                                ));
+                                        }
+                                        Err(_) => {
+                                            // Predicate evaluation failed (e.g., column not found)
+                                            // Keep all rows (maybe)
+                                            stripe_selection =
+                                                Some(RowSelection::select_all(stripe_rows));
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // Row indexes not available, keep all rows (maybe)
+                                    stripe_selection = Some(RowSelection::select_all(stripe_rows));
+                                }
                             }
-                        });
+                        }
+
+                        // Combine with existing row_selection if present
+                        let mut final_selection = stripe_selection;
+                        if let Some(ref mut existing_selection) = self.row_selection {
+                            if existing_selection.row_count() > 0 {
+                                let existing_for_stripe = existing_selection.split_off(stripe_rows);
+                                final_selection = match final_selection {
+                                    Some(predicate_selection) => {
+                                        // Both predicate and manual selection: combine with AND
+                                        Some(
+                                            existing_for_stripe.and_then(&predicate_selection),
+                                        )
+                                    }
+                                    None => Some(existing_for_stripe),
+                                };
+                            }
+                        }
 
                         match NaiveStripeDecoder::new_with_selection(
                             stripe,
                             self.schema_ref.clone(),
                             self.batch_size,
-                            selection,
+                            final_selection,
                         ) {
                             Ok(decoder) => {
                                 self.state = StreamState::Decoding(Box::new(decoder));
@@ -241,14 +302,23 @@ impl<R: AsyncChunkReader + 'static> ArrowReaderBuilder<R> {
             .file_metadata()
             .root_data_type()
             .project(&self.projection);
+        let projected_data_type_clone = projected_data_type.clone();
         let schema_ref = self.schema();
         let cursor = Cursor {
             reader: self.reader,
-            file_metadata: self.file_metadata,
+            file_metadata: self.file_metadata.clone(),
             projected_data_type,
             stripe_index: 0,
             file_byte_range: self.file_byte_range,
         };
-        ArrowStreamReader::new(cursor, self.batch_size, schema_ref, self.row_selection)
+        ArrowStreamReader::new(
+            cursor,
+            self.batch_size,
+            schema_ref,
+            self.row_selection,
+            self.predicate,
+            projected_data_type_clone,
+            self.file_metadata,
+        )
     }
 }

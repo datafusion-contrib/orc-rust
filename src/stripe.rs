@@ -259,6 +259,52 @@ impl Stripe {
     pub fn writer_tz(&self) -> Option<chrono_tz::Tz> {
         self.tz
     }
+
+    /// Parse row indexes from the stripe index section
+    ///
+    /// According to ORC spec, row indexes are only loaded when predicate pushdown
+    /// is used or when seeking to a particular row. This function performs lazy
+    /// parsing of ROW_INDEX streams from the stripe's index section.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_metadata` - File metadata containing row_index_stride
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(StripeRowIndex)` - Parsed row indexes for all primitive columns
+    /// * `Err(OrcError)` - If parsing fails or row_index_stride is not available
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use orc_rust::stripe::Stripe;
+    /// # use orc_rust::reader::metadata::FileMetadata;
+    /// # fn example(stripe: &Stripe, file_metadata: &FileMetadata) -> Result<(), Box<dyn std::error::Error>> {
+    /// let row_index = stripe.read_row_indexes(file_metadata)?;
+    /// // Access statistics for each row group
+    /// if let Some(col_index) = row_index.column(0) {
+    ///     for row_group_idx in 0..col_index.num_row_groups() {
+    ///         if let Some(stats) = col_index.row_group_stats(row_group_idx) {
+    ///             println!("Row group {}: {:?}", row_group_idx, stats);
+    ///         }
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn read_row_indexes(&self, file_metadata: &crate::reader::metadata::FileMetadata) -> Result<crate::row_index::StripeRowIndex> {
+        let rows_per_group = file_metadata
+            .row_index_stride()
+            .unwrap_or(10_000); // Default per ORC spec
+
+        crate::row_index::parse_stripe_row_indexes(
+            &self.stream_map,
+            &self.columns,
+            self.number_of_rows,
+            rows_per_group,
+        )
+    }
 }
 
 #[derive(Debug)]
