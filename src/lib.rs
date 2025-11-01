@@ -62,6 +62,7 @@ pub mod projection;
 mod proto;
 pub mod predicate;
 pub mod reader;
+pub mod row_group_filter;
 pub mod row_index;
 pub mod row_selection;
 pub mod schema;

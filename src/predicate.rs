@@ -191,13 +191,13 @@ mod tests {
     #[test]
     fn test_predicate_creation() {
         let p1 = Predicate::eq("age", ScalarValue::Int32(Some(18)));
-        assert!(matches!(p1, Predicate::Comparison { column, op: ComparisonOp::Equal, .. } if column == "age"));
+        assert!(matches!(p1, Predicate::Comparison { ref column, op: ComparisonOp::Equal, .. } if column == "age"));
 
         let p2 = Predicate::gt("price", ScalarValue::Float64(Some(100.0)));
-        assert!(matches!(p2, Predicate::Comparison { column, op: ComparisonOp::GreaterThan, .. } if column == "price"));
+        assert!(matches!(p2, Predicate::Comparison { ref column, op: ComparisonOp::GreaterThan, .. } if column == "price"));
 
         let p3 = Predicate::is_null("description");
-        assert!(matches!(p3, Predicate::IsNull { column } if column == "description"));
+        assert!(matches!(p3, Predicate::IsNull { ref column } if column == "description"));
 
         let combined = Predicate::and(vec![p1, p2]);
         assert!(matches!(combined, Predicate::And(_)));
