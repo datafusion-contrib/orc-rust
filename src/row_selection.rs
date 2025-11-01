@@ -313,6 +313,82 @@ impl RowSelection {
         }
     }
 
+    /// Create a [`RowSelection`] from row group filter results
+    ///
+    /// This function converts a boolean vector (one per row group) into a
+    /// [`RowSelection`] that skips or selects entire row groups.
+    ///
+    /// # Arguments
+    ///
+    /// * `row_group_filter` - Boolean vector where `true` means keep the row group,
+    ///   `false` means skip it. Each element corresponds to one row group.
+    /// * `rows_per_group` - Number of rows in each row group (typically 10,000)
+    /// * `total_rows` - Total number of rows in the stripe/file
+    ///
+    /// # Returns
+    ///
+    /// A [`RowSelection`] where:
+    /// - `false` entries become `RowSelector::skip(rows_per_group)`
+    /// - `true` entries become `RowSelector::select(rows_per_group)`
+    /// - Adjacent selectors of the same type are merged
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use orc_rust::row_selection::RowSelection;
+    ///
+    /// // 3 row groups: skip first, keep second, skip third
+    /// let filter = vec![false, true, false];
+    /// let selection = RowSelection::from_row_group_filter(&filter, 10000, 30000);
+    ///
+    /// // Result: skip(10000) + select(10000) + skip(10000)
+    /// assert_eq!(selection.row_count(), 30000);
+    /// assert_eq!(selection.selected_row_count(), 10000);
+    /// ```
+    pub fn from_row_group_filter(
+        row_group_filter: &[bool],
+        rows_per_group: usize,
+        total_rows: usize,
+    ) -> Self {
+        if row_group_filter.is_empty() {
+            return Self::skip_all(total_rows);
+        }
+
+        let num_row_groups = row_group_filter.len();
+        let mut selectors: Vec<RowSelector> = Vec::new();
+
+        for &keep in row_group_filter {
+            let selector = if keep {
+                RowSelector::select(rows_per_group)
+            } else {
+                RowSelector::skip(rows_per_group)
+            };
+
+            // Merge with previous selector if same type
+            match selectors.last_mut() {
+                Some(last) if last.skip == selector.skip => {
+                    last.row_count = last.row_count.checked_add(rows_per_group).unwrap();
+                }
+                _ => selectors.push(selector),
+            }
+        }
+
+        // Handle remaining rows if row groups don't cover all rows
+        let covered_rows = num_row_groups * rows_per_group;
+        if covered_rows < total_rows {
+            let remaining = total_rows - covered_rows;
+            // Add remaining rows as skip (they're not in any row group)
+            match selectors.last_mut() {
+                Some(last) if last.skip => {
+                    last.row_count = last.row_count.checked_add(remaining).unwrap();
+                }
+                _ => selectors.push(RowSelector::skip(remaining)),
+            }
+        }
+
+        Self { selectors }
+    }
+
     /// Combine two [`RowSelection`]s using logical AND
     ///
     /// Returns a new [`RowSelection`] representing rows that are selected
@@ -556,5 +632,91 @@ mod tests {
     #[should_panic(expected = "ranges must be provided in order")]
     fn test_row_selection_out_of_order() {
         RowSelection::from_consecutive_ranges(vec![10..20, 5..15].into_iter(), 25);
+    }
+
+    #[test]
+    fn test_row_selection_from_row_group_filter() {
+        // 3 row groups: skip first, keep second, skip third
+        let filter = vec![false, true, false];
+        let selection = RowSelection::from_row_group_filter(&filter, 10000, 30000);
+
+        let expected = vec![
+            RowSelector::skip(10000),
+            RowSelector::select(10000),
+            RowSelector::skip(10000),
+        ];
+
+        assert_eq!(selection.selectors, expected);
+        assert_eq!(selection.row_count(), 30000);
+        assert_eq!(selection.selected_row_count(), 10000);
+        assert_eq!(selection.skipped_row_count(), 20000);
+    }
+
+    #[test]
+    fn test_row_selection_from_row_group_filter_all_keep() {
+        // All row groups kept
+        let filter = vec![true, true, true];
+        let selection = RowSelection::from_row_group_filter(&filter, 10000, 30000);
+
+        let expected = vec![RowSelector::select(30000)];
+
+        assert_eq!(selection.selectors, expected);
+        assert_eq!(selection.selected_row_count(), 30000);
+    }
+
+    #[test]
+    fn test_row_selection_from_row_group_filter_all_skip() {
+        // All row groups skipped
+        let filter = vec![false, false, false];
+        let selection = RowSelection::from_row_group_filter(&filter, 10000, 30000);
+
+        let expected = vec![RowSelector::skip(30000)];
+
+        assert_eq!(selection.selectors, expected);
+        assert_eq!(selection.selected_row_count(), 0);
+    }
+
+    #[test]
+    fn test_row_selection_from_row_group_filter_merge() {
+        // Test merging: skip, skip, keep, keep, skip
+        let filter = vec![false, false, true, true, false];
+        let selection = RowSelection::from_row_group_filter(&filter, 10000, 50000);
+
+        // Should merge consecutive skip/select selectors
+        let expected = vec![
+            RowSelector::skip(20000), // Merged 2 skips
+            RowSelector::select(20000), // Merged 2 selects
+            RowSelector::skip(10000),
+        ];
+
+        assert_eq!(selection.selectors, expected);
+        assert_eq!(selection.row_count(), 50000);
+    }
+
+    #[test]
+    fn test_row_selection_from_row_group_filter_remaining_rows() {
+        // 2 row groups covering 20000 rows, but total is 25000
+        let filter = vec![true, false];
+        let selection = RowSelection::from_row_group_filter(&filter, 10000, 25000);
+
+        // Should add remaining 5000 rows as skip
+        let expected = vec![
+            RowSelector::select(10000),
+            RowSelector::skip(15000), // 10000 skipped + 5000 remaining
+        ];
+
+        assert_eq!(selection.selectors, expected);
+        assert_eq!(selection.row_count(), 25000);
+    }
+
+    #[test]
+    fn test_row_selection_from_row_group_filter_empty() {
+        // Empty filter with non-zero total rows
+        let filter = vec![];
+        let selection = RowSelection::from_row_group_filter(&filter, 10000, 50000);
+
+        // Should skip all rows
+        let expected = vec![RowSelector::skip(50000)];
+        assert_eq!(selection.selectors, expected);
     }
 }
