@@ -29,7 +29,7 @@ use crate::projection::ProjectionMask;
 use crate::reader::metadata::{read_metadata, FileMetadata};
 use crate::reader::ChunkReader;
 use crate::row_selection::RowSelection;
-use crate::schema::{RootDataType, TimestampPrecision};
+use crate::schema::{ArrowSchemaOptions, RootDataType, TimestampPrecision};
 use crate::stripe::{Stripe, StripeMetadata};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -149,10 +149,9 @@ impl<R> ArrowReaderBuilder<R> {
             .map(|(key, value)| (key.clone(), String::from_utf8_lossy(value).to_string()))
             .collect::<HashMap<_, _>>();
         self.schema_ref.clone().unwrap_or_else(|| {
-            Arc::new(
-                projected_data_type
-                    .create_arrow_schema_with_options(&metadata, self.timestamp_precision),
-            )
+            let options =
+                ArrowSchemaOptions::new().with_timestamp_precision(self.timestamp_precision);
+            Arc::new(projected_data_type.create_arrow_schema_with_options(&metadata, options))
         })
     }
 }
