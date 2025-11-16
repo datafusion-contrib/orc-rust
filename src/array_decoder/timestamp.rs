@@ -251,11 +251,28 @@ impl<T: ArrowTimestampType> ArrayBatchDecoder for TimestampOffsetArrayDecoder<T>
         let convert_timezone = |ts| {
             // Convert from writer timezone to reader timezone (which we default to UTC)
             // TODO: more efficient way of doing this?
-            self.writer_tz
-                .timestamp_nanos(ts)
-                .naive_local()
-                .and_utc()
-                .timestamp_nanos_opt()
+            let microseconds_in_timeunit = match T::UNIT {
+                TimeUnit::Second => 1_000_000,
+                TimeUnit::Millisecond => 1_000,
+                TimeUnit::Microsecond => 1,
+                TimeUnit::Nanosecond => -1, // not used in this case
+            };
+
+            match T::UNIT {
+                TimeUnit::Second | TimeUnit::Millisecond | TimeUnit::Microsecond => self
+                    .writer_tz
+                    .timestamp_micros(ts * microseconds_in_timeunit)
+                    .single()
+                    .map(|dt| {
+                        dt.naive_local().and_utc().timestamp_micros() / microseconds_in_timeunit
+                    }),
+                TimeUnit::Nanosecond => self
+                    .writer_tz
+                    .timestamp_nanos(ts)
+                    .naive_local()
+                    .and_utc()
+                    .timestamp_nanos_opt(),
+            }
         };
         let array = array
             // first try to convert all non-nullable batches to non-nullable batches

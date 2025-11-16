@@ -72,3 +72,4 @@ pub use arrow_writer::{ArrowWriter, ArrowWriterBuilder};
 #[cfg(feature = "async")]
 pub use async_arrow_reader::ArrowStreamReader;
 pub use row_selection::{RowSelection, RowSelector};
+pub use schema::TimestampPrecision;

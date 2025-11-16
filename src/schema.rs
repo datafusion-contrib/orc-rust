@@ -27,6 +27,16 @@ use crate::proto;
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit, UnionMode};
 
+/// Configuration for timestamp precision when converting ORC timestamps to Arrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimestampPrecision {
+    /// Convert timestamps to microseconds (lower precision).
+    Microsecond,
+    /// Convert timestamps to nanoseconds (default, higher precision).
+    #[default]
+    Nanosecond,
+}
+
 /// Represents the root data type of the ORC file. Contains multiple named child types
 /// which map to the columns available. Allows projecting only specific columns from
 /// the base schema.
@@ -63,11 +73,22 @@ impl RootDataType {
 
     /// Convert into an Arrow schema.
     pub fn create_arrow_schema(&self, user_metadata: &HashMap<String, String>) -> Schema {
+        self.create_arrow_schema_with_options(user_metadata, TimestampPrecision::default())
+    }
+
+    /// Convert into an Arrow schema with specified timestamp precision.
+    pub fn create_arrow_schema_with_options(
+        &self,
+        user_metadata: &HashMap<String, String>,
+        timestamp_precision: TimestampPrecision,
+    ) -> Schema {
         let fields = self
             .children
             .iter()
             .map(|col| {
-                let dt = col.data_type().to_arrow_data_type();
+                let dt = col
+                    .data_type()
+                    .to_arrow_data_type_with_options(timestamp_precision);
                 Field::new(col.name(), dt, true)
             })
             .collect::<Vec<_>>();
@@ -435,6 +456,18 @@ impl DataType {
     }
 
     pub fn to_arrow_data_type(&self) -> ArrowDataType {
+        self.to_arrow_data_type_with_options(TimestampPrecision::default())
+    }
+
+    pub fn to_arrow_data_type_with_options(
+        &self,
+        timestamp_precision: TimestampPrecision,
+    ) -> ArrowDataType {
+        let time_unit = match timestamp_precision {
+            TimestampPrecision::Microsecond => TimeUnit::Microsecond,
+            TimestampPrecision::Nanosecond => TimeUnit::Nanosecond,
+        };
+
         match self {
             DataType::Boolean { .. } => ArrowDataType::Boolean,
             DataType::Byte { .. } => ArrowDataType::Int8,
@@ -450,23 +483,25 @@ impl DataType {
             DataType::Decimal {
                 precision, scale, ..
             } => ArrowDataType::Decimal128(*precision as u8, *scale as i8), // TODO: safety of cast?
-            DataType::Timestamp { .. } => ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+            DataType::Timestamp { .. } => ArrowDataType::Timestamp(time_unit, None),
             DataType::TimestampWithLocalTimezone { .. } => {
-                ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into()))
+                ArrowDataType::Timestamp(time_unit, Some("UTC".into()))
             }
             DataType::Date { .. } => ArrowDataType::Date32,
             DataType::Struct { children, .. } => {
                 let children = children
                     .iter()
                     .map(|col| {
-                        let dt = col.data_type().to_arrow_data_type();
+                        let dt = col
+                            .data_type()
+                            .to_arrow_data_type_with_options(timestamp_precision);
                         Field::new(col.name(), dt, true)
                     })
                     .collect();
                 ArrowDataType::Struct(children)
             }
             DataType::List { child, .. } => {
-                let child = child.to_arrow_data_type();
+                let child = child.to_arrow_data_type_with_options(timestamp_precision);
                 ArrowDataType::new_list(child, true)
             }
             DataType::Map { key, value, .. } => {
@@ -474,9 +509,9 @@ impl DataType {
                 //       move to common location?
                 // TODO: should it be "keys" and "values" (like arrow-rs)
                 //       or "key" and "value" like PyArrow and in Schema.fbs?
-                let key = key.to_arrow_data_type();
+                let key = key.to_arrow_data_type_with_options(timestamp_precision);
                 let key = Field::new("keys", key, false);
-                let value = value.to_arrow_data_type();
+                let value = value.to_arrow_data_type_with_options(timestamp_precision);
                 let value = Field::new("values", value, true);
 
                 let dt = ArrowDataType::Struct(vec![key, value].into());
@@ -492,7 +527,7 @@ impl DataType {
                         // TODO: Support up to including 256
                         //       Need to do Union within Union
                         let index = index as u8 as i8;
-                        let arrow_dt = variant.to_arrow_data_type();
+                        let arrow_dt = variant.to_arrow_data_type_with_options(timestamp_precision);
                         // Name shouldn't matter here (only ORC struct types give names to subtypes anyway)
                         // Using naming convention following PyArrow for easier comparison
                         let field = Arc::new(Field::new(format!("_union_{index}"), arrow_dt, true));

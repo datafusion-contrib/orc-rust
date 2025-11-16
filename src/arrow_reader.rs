@@ -29,7 +29,7 @@ use crate::projection::ProjectionMask;
 use crate::reader::metadata::{read_metadata, FileMetadata};
 use crate::reader::ChunkReader;
 use crate::row_selection::RowSelection;
-use crate::schema::RootDataType;
+use crate::schema::{RootDataType, TimestampPrecision};
 use crate::stripe::{Stripe, StripeMetadata};
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
@@ -42,6 +42,7 @@ pub struct ArrowReaderBuilder<R> {
     pub(crate) schema_ref: Option<SchemaRef>,
     pub(crate) file_byte_range: Option<Range<usize>>,
     pub(crate) row_selection: Option<RowSelection>,
+    pub(crate) timestamp_precision: TimestampPrecision,
 }
 
 impl<R> ArrowReaderBuilder<R> {
@@ -54,6 +55,7 @@ impl<R> ArrowReaderBuilder<R> {
             schema_ref: None,
             file_byte_range: None,
             row_selection: None,
+            timestamp_precision: TimestampPrecision::default(),
         }
     }
 
@@ -109,6 +111,28 @@ impl<R> ArrowReaderBuilder<R> {
         self
     }
 
+    /// Sets the timestamp precision for reading timestamp columns.
+    ///
+    /// By default, timestamps are read as Nanosecond precision.
+    /// Use this method to switch to Microsecond precision if needed for compatibility.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::fs::File;
+    /// # use orc_rust::arrow_reader::ArrowReaderBuilder;
+    /// # use orc_rust::schema::TimestampPrecision;
+    /// let file = File::open("/path/to/file.orc").unwrap();
+    /// let reader = ArrowReaderBuilder::try_new(file)
+    ///     .unwrap()
+    ///     .with_timestamp_precision(TimestampPrecision::Microsecond)
+    ///     .build();
+    /// ```
+    pub fn with_timestamp_precision(mut self, precision: TimestampPrecision) -> Self {
+        self.timestamp_precision = precision;
+        self
+    }
+
     /// Returns the currently computed schema
     ///
     /// Unless [`with_schema`](Self::with_schema) was called, this is computed dynamically
@@ -124,9 +148,12 @@ impl<R> ArrowReaderBuilder<R> {
             .iter()
             .map(|(key, value)| (key.clone(), String::from_utf8_lossy(value).to_string()))
             .collect::<HashMap<_, _>>();
-        self.schema_ref
-            .clone()
-            .unwrap_or_else(|| Arc::new(projected_data_type.create_arrow_schema(&metadata)))
+        self.schema_ref.clone().unwrap_or_else(|| {
+            Arc::new(
+                projected_data_type
+                    .create_arrow_schema_with_options(&metadata, self.timestamp_precision),
+            )
+        })
     }
 }
 
