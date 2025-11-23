@@ -293,10 +293,11 @@ impl Stripe {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn read_row_indexes(&self, file_metadata: &crate::reader::metadata::FileMetadata) -> Result<crate::row_index::StripeRowIndex> {
-        let rows_per_group = file_metadata
-            .row_index_stride()
-            .unwrap_or(10_000); // Default per ORC spec
+    pub fn read_row_indexes(
+        &self,
+        file_metadata: &crate::reader::metadata::FileMetadata,
+    ) -> Result<crate::row_index::StripeRowIndex> {
+        let rows_per_group = file_metadata.row_index_stride().unwrap_or(10_000); // Default per ORC spec
 
         crate::row_index::parse_stripe_row_indexes(
             &self.stream_map,

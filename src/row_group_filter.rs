@@ -142,9 +142,7 @@ fn evaluate_comparison(
 
     // Get row group index for this column
     let col_index = row_index.column(column_idx).context(UnexpectedSnafu {
-        msg: format!(
-            "Row index not found for column '{column}' (index {column_idx})",
-        ),
+        msg: format!("Row index not found for column '{column}' (index {column_idx})",),
     })?;
 
     // Evaluate each row group
@@ -218,17 +216,15 @@ fn evaluate_comparison_with_stats(
         }
 
         // String comparisons
-        TypeStatistics::String { min, max, .. } => {
-            match value {
-                PredicateValue::Utf8(Some(v)) => evaluate_string_comparison(min, max, op, v),
-                _ => {
-                    return Err(UnexpectedSnafu {
-                        msg: "Type mismatch: expected string value".to_string(),
-                    }
-                    .build());
+        TypeStatistics::String { min, max, .. } => match value {
+            PredicateValue::Utf8(Some(v)) => evaluate_string_comparison(min, max, op, v),
+            _ => {
+                return Err(UnexpectedSnafu {
+                    msg: "Type mismatch: expected string value".to_string(),
                 }
+                .build());
             }
-        }
+        },
 
         // Date comparisons
         TypeStatistics::Date { min, max } => {
@@ -246,19 +242,19 @@ fn evaluate_comparison_with_stats(
         }
 
         // Timestamp comparisons (using UTC)
-        TypeStatistics::Timestamp { min_utc, max_utc, .. } => {
-            match value {
-                PredicateValue::Int64(Some(v)) => {
-                    evaluate_integer_comparison(*min_utc, *max_utc, op, *v)
-                }
-                _ => {
-                    return Err(UnexpectedSnafu {
-                        msg: "Type mismatch: expected integer value for timestamp".to_string(),
-                    }
-                    .build());
-                }
+        TypeStatistics::Timestamp {
+            min_utc, max_utc, ..
+        } => match value {
+            PredicateValue::Int64(Some(v)) => {
+                evaluate_integer_comparison(*min_utc, *max_utc, op, *v)
             }
-        }
+            _ => {
+                return Err(UnexpectedSnafu {
+                    msg: "Type mismatch: expected integer value for timestamp".to_string(),
+                }
+                .build());
+            }
+        },
 
         // Decimal comparisons
         TypeStatistics::Decimal { min, max, .. } => {
@@ -429,9 +425,7 @@ fn evaluate_is_null(
 ) -> Result<()> {
     let column_idx = find_column_index(schema, column)?;
     let col_index = row_index.column(column_idx).context(UnexpectedSnafu {
-        msg: format!(
-            "Row index not found for column '{column}' (index {column_idx})",
-        ),
+        msg: format!("Row index not found for column '{column}' (index {column_idx})",),
     })?;
 
     for (row_group_idx, result_item) in result
@@ -461,9 +455,7 @@ fn evaluate_is_not_null(
 ) -> Result<()> {
     let column_idx = find_column_index(schema, column)?;
     let col_index = row_index.column(column_idx).context(UnexpectedSnafu {
-        msg: format!(
-            "Row index not found for column '{column}' (index {column_idx})",
-        ),
+        msg: format!("Row index not found for column '{column}' (index {column_idx})",),
     })?;
 
     for (row_group_idx, result_item) in result
@@ -487,19 +479,19 @@ fn evaluate_is_not_null(
 
 #[cfg(test)]
 mod tests {
+    use crate::proto;
     use crate::row_index::{RowGroupEntry, RowGroupIndex, StripeRowIndex};
     use crate::statistics::ColumnStatistics;
-    use crate::proto;
     use std::collections::HashMap;
 
     // Note: Tests are simplified as we can't directly construct RootDataType and NamedColumn
     // due to private fields. In real usage, these would come from parsing an ORC file.
-    
+
     fn create_test_row_index(rows_per_group: usize, total_rows: usize) -> StripeRowIndex {
         let mut columns = HashMap::new();
 
         // Column 1 (age): two row groups
-        
+
         let age_entries = vec![
             RowGroupEntry::new(
                 Some({
@@ -547,10 +539,9 @@ mod tests {
         assert_eq!(row_index.num_row_groups(), 2);
         assert_eq!(row_index.total_rows(), 20000);
         assert_eq!(row_index.rows_per_group(), 10000);
-        
+
         if let Some(col_index) = row_index.column(1) {
             assert_eq!(col_index.num_row_groups(), 2);
         }
     }
 }
-

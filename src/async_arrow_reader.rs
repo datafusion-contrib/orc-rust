@@ -242,9 +242,7 @@ impl<R: AsyncChunkReader + 'static> ArrowStreamReader<R> {
                                 final_selection = match final_selection {
                                     Some(predicate_selection) => {
                                         // Both predicate and manual selection: combine with AND
-                                        Some(
-                                            existing_for_stripe.and_then(&predicate_selection),
-                                        )
+                                        Some(existing_for_stripe.and_then(&predicate_selection))
                                     }
                                     None => Some(existing_for_stripe),
                                 };

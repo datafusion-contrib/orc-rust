@@ -684,7 +684,7 @@ mod tests {
 
         // Should merge consecutive skip/select selectors
         let expected = vec![
-            RowSelector::skip(20000), // Merged 2 skips
+            RowSelector::skip(20000),   // Merged 2 skips
             RowSelector::select(20000), // Merged 2 selects
             RowSelector::skip(10000),
         ];

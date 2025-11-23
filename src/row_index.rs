@@ -36,16 +36,16 @@ use crate::statistics::ColumnStatistics;
 pub struct RowGroupEntry {
     /// Statistics for this row group
     pub statistics: Option<ColumnStatistics>,
-    
+
     /// Stream positions for seeking
-    /// 
+    ///
     /// According to ORC spec, positions encode differently for:
     /// - Uncompressed: [RLE_run_byte_offset, num_values_to_consume]
     /// - Compressed: [compression_chunk_start, decompressed_bytes, num_values]
-    /// 
+    ///
     /// For columns with multiple streams, positions are concatenated:
     /// [PRESENT_positions..., DATA_positions..., LENGTH_positions...]
-    /// 
+    ///
     /// Note: Dictionary positions are NOT included (dictionary must be fully read)
     pub positions: Vec<u64>,
 }
@@ -67,10 +67,10 @@ impl RowGroupEntry {
 pub struct RowGroupIndex {
     /// Row group entries, one per row group
     entries: Vec<RowGroupEntry>,
-    
+
     /// Number of rows per row group (from row_index_stride, default 10,000)
     rows_per_group: usize,
-    
+
     /// Column index this row index belongs to
     column_index: usize,
 }
@@ -125,16 +125,20 @@ impl RowGroupIndex {
 pub struct StripeRowIndex {
     /// Map from column index to its row group index
     columns: HashMap<usize, RowGroupIndex>,
-    
+
     /// Total number of rows in the stripe
     total_rows: usize,
-    
+
     /// Number of rows per row group
     rows_per_group: usize,
 }
 
 impl StripeRowIndex {
-    pub fn new(columns: HashMap<usize, RowGroupIndex>, total_rows: usize, rows_per_group: usize) -> Self {
+    pub fn new(
+        columns: HashMap<usize, RowGroupIndex>,
+        total_rows: usize,
+        rows_per_group: usize,
+    ) -> Self {
         Self {
             columns,
             total_rows,
@@ -188,7 +192,7 @@ fn parse_row_index(
     rows_per_group: usize,
 ) -> Result<RowGroupIndex> {
     use crate::statistics::ColumnStatistics;
-    
+
     let entries: Result<Vec<RowGroupEntry>> = proto
         .entry
         .iter()
@@ -219,7 +223,7 @@ pub fn parse_stripe_row_indexes(
     total_rows: usize,
     rows_per_group: usize,
 ) -> Result<StripeRowIndex> {
-    use crate::error::{IoSnafu, DecodeProtoSnafu};
+    use crate::error::{DecodeProtoSnafu, IoSnafu};
     use crate::proto::stream::Kind;
     use prost::Message;
     use snafu::ResultExt;
@@ -228,22 +232,22 @@ pub fn parse_stripe_row_indexes(
 
     for column in columns {
         let column_id = column.column_id();
-        
+
         // Try to get ROW_INDEX stream for this column
         let row_index_stream = stripe_stream_map.get_opt(column, Kind::RowIndex);
-        
+
         if let Some(mut decompressor) = row_index_stream {
             // Decompress the stream
             let mut buffer = Vec::new();
-            std::io::Read::read_to_end(&mut decompressor, &mut buffer)
-                .context(IoSnafu)?;
-            
+            std::io::Read::read_to_end(&mut decompressor, &mut buffer).context(IoSnafu)?;
+
             // Parse the protobuf message
-            let proto_row_index = proto::RowIndex::decode(buffer.as_slice())
-                .context(DecodeProtoSnafu)?;
-            
+            let proto_row_index =
+                proto::RowIndex::decode(buffer.as_slice()).context(DecodeProtoSnafu)?;
+
             // Parse into RowGroupIndex
-            let row_group_index = parse_row_index(&proto_row_index, column_id as usize, rows_per_group)?;
+            let row_group_index =
+                parse_row_index(&proto_row_index, column_id as usize, rows_per_group)?;
             row_indexes.insert(column_id as usize, row_group_index);
         }
     }
@@ -262,7 +266,7 @@ mod tests {
             RowGroupEntry::new(None, vec![4, 5, 6]),
         ];
         let index = RowGroupIndex::new(entries, 10000, 0);
-        
+
         assert_eq!(index.num_row_groups(), 2);
         assert_eq!(index.rows_per_group(), 10000);
         assert_eq!(index.column_index(), 0);
@@ -273,12 +277,11 @@ mod tests {
         let mut columns = HashMap::new();
         let entries = vec![RowGroupEntry::new(None, vec![])];
         columns.insert(0, RowGroupIndex::new(entries, 10000, 0));
-        
+
         let stripe_index = StripeRowIndex::new(columns, 50000, 10000);
-        
+
         assert_eq!(stripe_index.num_row_groups(), 5);
         assert_eq!(stripe_index.total_rows(), 50000);
         assert_eq!(stripe_index.rows_per_group(), 10000);
     }
 }
-

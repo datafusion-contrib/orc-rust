@@ -57,10 +57,10 @@ pub mod compression;
 mod encoding;
 pub mod error;
 mod memory;
+pub mod predicate;
 pub mod projection;
 #[allow(dead_code)]
 mod proto;
-pub mod predicate;
 pub mod reader;
 pub mod row_group_filter;
 pub mod row_index;
