@@ -121,9 +121,8 @@ fn find_column_index(schema: &RootDataType, column_name: &str) -> Result<usize> 
     schema
         .children()
         .iter()
-        .enumerate()
-        .find(|(_, col)| col.name() == column_name)
-        .map(|(idx, _)| idx)
+        .find(|col| col.name() == column_name)
+        .map(|col| col.data_type().column_index())
         .context(UnexpectedSnafu {
             msg: format!("Column '{column_name}' not found in schema"),
         })
@@ -543,5 +542,386 @@ mod tests {
         if let Some(col_index) = row_index.column(1) {
             assert_eq!(col_index.num_row_groups(), 2);
         }
+    }
+
+    // Helper function to create a simple schema for testing
+    // The schema will have "age" column at index 1 (matching row_index)
+    fn create_test_schema() -> crate::schema::RootDataType {
+        use crate::proto::r#type::Kind;
+        use crate::proto::Type;
+
+        // Create proto types:
+        // Index 0: root (struct)
+        // Index 1: age (int) - this matches the column index in row_index
+        let types = vec![
+            Type {
+                kind: Some(Kind::Struct as i32),
+                subtypes: vec![1], // age column at index 1
+                field_names: vec!["age".to_string()],
+                ..Default::default()
+            },
+            Type {
+                kind: Some(Kind::Int as i32),
+                subtypes: vec![],
+                field_names: vec![],
+                ..Default::default()
+            },
+        ];
+
+        crate::schema::RootDataType::from_proto(&types).unwrap()
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_greater_than() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age > 20
+        // Row group 0: min=18, max=25 -> should keep (20 is within range)
+        // Row group 1: min=26, max=65 -> should keep (definitely > 20)
+        let predicate = Predicate::gt("age", PredicateValue::Int32(Some(20)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0]); // Row group 0: might contain values > 20
+        assert!(result[1]); // Row group 1: definitely contains values > 20
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_greater_than_or_equal() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age >= 30
+        // Row group 0: min=18, max=25 -> should skip (max < 30)
+        // Row group 1: min=26, max=65 -> should keep (might contain >= 30)
+        let predicate = Predicate::gte("age", PredicateValue::Int32(Some(30)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(!result[0]); // Row group 0: max=25 < 30, skip
+        assert!(result[1]); // Row group 1: max=65 >= 30, keep
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_less_than() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age < 30
+        // Row group 0: min=18, max=25 -> should keep (definitely < 30)
+        // Row group 1: min=26, max=65 -> should keep (might contain < 30)
+        let predicate = Predicate::lt("age", PredicateValue::Int32(Some(30)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0]); // Row group 0: max=25 < 30, keep
+        assert!(result[1]); // Row group 1: min=26 < 30, keep
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_less_than_or_equal() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age <= 20
+        // Row group 0: min=18, max=25 -> should keep (might contain <= 20)
+        // Row group 1: min=26, max=65 -> should skip (min > 20)
+        let predicate = Predicate::lte("age", PredicateValue::Int32(Some(20)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0]); // Row group 0: min=18 <= 20, keep
+        assert!(!result[1]); // Row group 1: min=26 > 20, skip
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_equal() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age = 20
+        // Row group 0: min=18, max=25 -> should keep (20 is within range)
+        // Row group 1: min=26, max=65 -> should skip (20 is not in range)
+        let predicate = Predicate::eq("age", PredicateValue::Int32(Some(20)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0]); // Row group 0: 20 is within [18, 25]
+        assert!(!result[1]); // Row group 1: 20 is not within [26, 65]
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_not_equal() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age != 20
+        // Row group 0: min=18, max=25 -> should keep (might have values != 20)
+        // Row group 1: min=26, max=65 -> should keep (definitely != 20)
+        let predicate = Predicate::ne("age", PredicateValue::Int32(Some(20)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        // For !=, we keep if value is not the only value in the range
+        // Row group 0: [18, 25] contains more than just 20, so keep
+        assert!(result[0]);
+        // Row group 1: [26, 65] doesn't contain 20, so keep
+        assert!(result[1]);
+    }
+
+    #[test]
+    fn test_evaluate_predicate_integer_not_equal_single_value() {
+        use crate::predicate::{Predicate, PredicateValue};
+        use crate::row_index::{RowGroupEntry, RowGroupIndex};
+        use std::collections::HashMap;
+
+        // Create a row index where one row group has min=max=20
+        let mut columns = HashMap::new();
+        let entries = vec![RowGroupEntry::new(
+            Some({
+                let proto_stats = proto::ColumnStatistics {
+                    number_of_values: Some(1000),
+                    has_null: Some(false),
+                    int_statistics: Some(proto::IntegerStatistics {
+                        minimum: Some(20),
+                        maximum: Some(20), // Single value
+                        sum: Some(20000),
+                    }),
+                    ..Default::default()
+                };
+                ColumnStatistics::try_from(&proto_stats).unwrap()
+            }),
+            vec![],
+        )];
+        columns.insert(1, RowGroupIndex::new(entries, 10000, 1));
+        let row_index = StripeRowIndex::new(columns, 10000, 10000);
+        let schema = create_test_schema();
+
+        // Test: age != 20
+        // Row group: min=20, max=20 -> should skip (all values equal 20)
+        let predicate = Predicate::ne("age", PredicateValue::Int32(Some(20)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(!result[0]); // All values are 20, so skip
+    }
+
+    #[test]
+    fn test_evaluate_predicate_and_combination() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age >= 20 AND age <= 30
+        // Row group 0: min=18, max=25 -> should keep (overlaps with [20, 30])
+        // Row group 1: min=26, max=65 -> should keep (overlaps with [20, 30])
+        let predicate = Predicate::and(vec![
+            Predicate::gte("age", PredicateValue::Int32(Some(20))),
+            Predicate::lte("age", PredicateValue::Int32(Some(30))),
+        ]);
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        // Both row groups might contain values in [20, 30]
+        assert!(result[0]);
+        assert!(result[1]);
+    }
+
+    #[test]
+    fn test_evaluate_predicate_or_combination() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test: age < 20 OR age > 30
+        // Row group 0: min=18, max=25 -> should keep (might have < 20 or > 30)
+        // Row group 1: min=26, max=65 -> should keep (definitely has > 30)
+        let predicate = Predicate::or(vec![
+            Predicate::lt("age", PredicateValue::Int32(Some(20))),
+            Predicate::gt("age", PredicateValue::Int32(Some(30))),
+        ]);
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        // Row group 0: might have values < 20
+        assert!(result[0]);
+        // Row group 1: definitely has values > 30
+        assert!(result[1]);
+    }
+
+    #[test]
+    fn test_evaluate_predicate_is_null() {
+        use crate::predicate::Predicate;
+        use crate::row_index::{RowGroupEntry, RowGroupIndex};
+        use std::collections::HashMap;
+
+        // Create row index with has_null information
+        let mut columns = HashMap::new();
+        let entries = vec![
+            RowGroupEntry::new(
+                Some({
+                    let proto_stats = proto::ColumnStatistics {
+                        number_of_values: Some(5000),
+                        has_null: Some(true), // Has nulls
+                        int_statistics: Some(proto::IntegerStatistics {
+                            minimum: Some(18),
+                            maximum: Some(25),
+                            sum: Some(107500),
+                        }),
+                        ..Default::default()
+                    };
+                    ColumnStatistics::try_from(&proto_stats).unwrap()
+                }),
+                vec![],
+            ),
+            RowGroupEntry::new(
+                Some({
+                    let proto_stats = proto::ColumnStatistics {
+                        number_of_values: Some(5000),
+                        has_null: Some(false), // No nulls
+                        int_statistics: Some(proto::IntegerStatistics {
+                            minimum: Some(26),
+                            maximum: Some(65),
+                            sum: Some(227500),
+                        }),
+                        ..Default::default()
+                    };
+                    ColumnStatistics::try_from(&proto_stats).unwrap()
+                }),
+                vec![],
+            ),
+        ];
+        columns.insert(1, RowGroupIndex::new(entries, 10000, 1));
+        let row_index = StripeRowIndex::new(columns, 20000, 10000);
+        let schema = create_test_schema();
+
+        // Test: age IS NULL
+        let predicate = Predicate::is_null("age");
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0]); // Row group 0: has_null = true
+        assert!(!result[1]); // Row group 1: has_null = false
+    }
+
+    #[test]
+    fn test_evaluate_predicate_is_not_null() {
+        use crate::predicate::Predicate;
+        use crate::row_index::{RowGroupEntry, RowGroupIndex};
+        use std::collections::HashMap;
+
+        // Create row index with number_of_values information
+        let mut columns = HashMap::new();
+        let entries = vec![
+            RowGroupEntry::new(
+                Some({
+                    let proto_stats = proto::ColumnStatistics {
+                        number_of_values: Some(5000), // Has non-null values
+                        has_null: Some(true),
+                        int_statistics: Some(proto::IntegerStatistics {
+                            minimum: Some(18),
+                            maximum: Some(25),
+                            sum: Some(107500),
+                        }),
+                        ..Default::default()
+                    };
+                    ColumnStatistics::try_from(&proto_stats).unwrap()
+                }),
+                vec![],
+            ),
+            RowGroupEntry::new(
+                Some({
+                    let proto_stats = proto::ColumnStatistics {
+                        number_of_values: Some(0), // All nulls
+                        has_null: Some(true),
+                        int_statistics: None,
+                        ..Default::default()
+                    };
+                    ColumnStatistics::try_from(&proto_stats).unwrap()
+                }),
+                vec![],
+            ),
+        ];
+        columns.insert(1, RowGroupIndex::new(entries, 10000, 1));
+        let row_index = StripeRowIndex::new(columns, 20000, 10000);
+        let schema = create_test_schema();
+
+        // Test: age IS NOT NULL
+        let predicate = Predicate::is_not_null("age");
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result[0]); // Row group 0: number_of_values > 0
+        assert!(!result[1]); // Row group 1: number_of_values = 0
+    }
+
+    #[test]
+    fn test_evaluate_predicate_missing_column() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        let row_index = create_test_row_index(10000, 20000);
+        let schema = create_test_schema();
+
+        // Test with non-existent column
+        let predicate = Predicate::gt("nonexistent", PredicateValue::Int32(Some(10)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_evaluate_predicate_missing_row_index() {
+        use crate::predicate::{Predicate, PredicateValue};
+        use crate::row_index::StripeRowIndex;
+        use std::collections::HashMap;
+
+        // Create row index without the column we're querying
+        let row_index = StripeRowIndex::new(HashMap::new(), 20000, 10000);
+        let schema = create_test_schema();
+
+        // Test with column that has no row index
+        let predicate = Predicate::gt("age", PredicateValue::Int32(Some(10)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_evaluate_predicate_missing_statistics() {
+        use crate::predicate::{Predicate, PredicateValue};
+        use crate::row_index::{RowGroupEntry, RowGroupIndex};
+        use std::collections::HashMap;
+
+        // Create row index with missing statistics
+        let mut columns = HashMap::new();
+        let entries = vec![
+            RowGroupEntry::new(None, vec![]), // No statistics
+        ];
+        columns.insert(1, RowGroupIndex::new(entries, 10000, 1));
+        let row_index = StripeRowIndex::new(columns, 10000, 10000);
+        let schema = create_test_schema();
+
+        // Test: age > 10
+        // Should keep row group when statistics are missing (conservative)
+        let predicate = Predicate::gt("age", PredicateValue::Int32(Some(10)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0]); // Keep when statistics missing
     }
 }

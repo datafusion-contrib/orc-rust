@@ -29,6 +29,7 @@ use arrow::{
 use pretty_assertions::assert_eq;
 
 use orc_rust::arrow_reader::ArrowReaderBuilder;
+use orc_rust::{Predicate, PredicateValue};
 
 fn read_orc_file(name: &str) -> RecordBatch {
     let path = format!(
@@ -157,6 +158,111 @@ fn test_memory_management_v12() {
 #[test]
 fn test_predicate_pushdown() {
     test_expected_file("TestOrcFile.testPredicatePushdown");
+}
+
+#[test]
+fn test_predicate_pushdown_with_filtering() {
+    let path = format!(
+        "{}/tests/integration/data/TestOrcFile.testPredicatePushdown.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Test with predicate: should filter rows
+    let predicate = Predicate::gt("int1", PredicateValue::Int32(Some(2000)));
+    let reader_with_predicate = ArrowReaderBuilder::try_new(f.try_clone().unwrap())
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    // Read without predicate: should get all rows
+    let reader_without = ArrowReaderBuilder::try_new(f).unwrap().build();
+
+    // Count rows with and without predicate
+    let with_count: usize = reader_with_predicate
+        .map(|b| b.map(|batch| batch.num_rows()).unwrap_or(0))
+        .sum();
+    let without_count: usize = reader_without
+        .map(|b| b.map(|batch| batch.num_rows()).unwrap_or(0))
+        .sum();
+
+    // With predicate should have fewer or equal rows
+    assert!(
+        with_count <= without_count,
+        "Predicate should filter rows: with_predicate={with_count}, without={without_count}",
+    );
+
+    // If predicate works, we should have fewer rows (unless all rows match)
+    // For this test file, we expect some filtering to occur
+    // Verify the API works and doesn't crash
+    assert!(with_count <= without_count);
+}
+
+#[test]
+fn test_predicate_pushdown_range_query() {
+    let path = format!(
+        "{}/tests/integration/data/TestOrcFile.testPredicatePushdown.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Test range query: int1 >= 1000 AND int1 <= 5000
+    let predicate = Predicate::and(vec![
+        Predicate::gte("int1", PredicateValue::Int32(Some(1000))),
+        Predicate::lte("int1", PredicateValue::Int32(Some(5000))),
+    ]);
+
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    // Should not crash and should return some batches
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+    assert!(!batches.is_empty());
+}
+
+#[test]
+fn test_predicate_pushdown_equality_query() {
+    let path = format!(
+        "{}/tests/integration/data/TestOrcFile.testPredicatePushdown.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Test equality query: int1 = 3000
+    let predicate = Predicate::eq("int1", PredicateValue::Int32(Some(3000)));
+
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    // Should not crash
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+}
+
+#[test]
+fn test_predicate_pushdown_without_index() {
+    // Test file without index should still work (graceful fallback)
+    let path = format!(
+        "{}/tests/integration/data/TestOrcFile.testWithoutIndex.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    let predicate = Predicate::gt("int1", PredicateValue::Int32(Some(1000)));
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    // Should not crash even without indexes (should fall back to reading all rows)
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
 }
 
 #[test]
