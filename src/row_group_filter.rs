@@ -125,7 +125,7 @@ fn find_column_index(schema: &RootDataType, column_name: &str) -> Result<usize> 
         .find(|(_, col)| col.name() == column_name)
         .map(|(idx, _)| idx)
         .context(UnexpectedSnafu {
-            msg: format!("Column '{}' not found in schema", column_name),
+            msg: format!("Column '{column_name}' not found in schema"),
         })
 }
 
@@ -143,28 +143,30 @@ fn evaluate_comparison(
     // Get row group index for this column
     let col_index = row_index.column(column_idx).context(UnexpectedSnafu {
         msg: format!(
-            "Row index not found for column '{}' (index {})",
-            column, column_idx
+            "Row index not found for column '{column}' (index {column_idx})",
         ),
     })?;
 
     // Evaluate each row group
-    for row_group_idx in 0..col_index.num_row_groups() {
+    for (row_group_idx, result_item) in result
+        .iter_mut()
+        .enumerate()
+        .take(col_index.num_row_groups())
+    {
         let entry = col_index.entry(row_group_idx);
         let entry = entry.context(UnexpectedSnafu {
             msg: format!(
-                "Row group entry not found for column {}, row group {}",
-                column_idx, row_group_idx
+                "Row group entry not found for column {column_idx}, row group {row_group_idx}",
             ),
         })?;
 
         // Get statistics for this row group
         if let Some(stats) = &entry.statistics {
             let matches = evaluate_comparison_with_stats(stats, op, value)?;
-            result[row_group_idx] = matches;
+            *result_item = matches;
         } else {
             // No statistics available, keep row group (maybe)
-            result[row_group_idx] = true;
+            *result_item = true;
         }
     }
 
@@ -428,19 +430,22 @@ fn evaluate_is_null(
     let column_idx = find_column_index(schema, column)?;
     let col_index = row_index.column(column_idx).context(UnexpectedSnafu {
         msg: format!(
-            "Row index not found for column '{}' (index {})",
-            column, column_idx
+            "Row index not found for column '{column}' (index {column_idx})",
         ),
     })?;
 
-    for row_group_idx in 0..col_index.num_row_groups() {
+    for (row_group_idx, result_item) in result
+        .iter_mut()
+        .enumerate()
+        .take(col_index.num_row_groups())
+    {
         if let Some(entry) = col_index.entry(row_group_idx) {
             if let Some(stats) = &entry.statistics {
                 // IS NULL: keep if has_null is true
-                result[row_group_idx] = stats.has_null();
+                *result_item = stats.has_null();
             } else {
                 // No statistics, keep row group (maybe)
-                result[row_group_idx] = true;
+                *result_item = true;
             }
         }
     }
@@ -457,19 +462,22 @@ fn evaluate_is_not_null(
     let column_idx = find_column_index(schema, column)?;
     let col_index = row_index.column(column_idx).context(UnexpectedSnafu {
         msg: format!(
-            "Row index not found for column '{}' (index {})",
-            column, column_idx
+            "Row index not found for column '{column}' (index {column_idx})",
         ),
     })?;
 
-    for row_group_idx in 0..col_index.num_row_groups() {
+    for (row_group_idx, result_item) in result
+        .iter_mut()
+        .enumerate()
+        .take(col_index.num_row_groups())
+    {
         if let Some(entry) = col_index.entry(row_group_idx) {
             if let Some(stats) = &entry.statistics {
                 // IS NOT NULL: keep if number_of_values > 0 (has non-null values)
-                result[row_group_idx] = stats.number_of_values() > 0;
+                *result_item = stats.number_of_values() > 0;
             } else {
                 // No statistics, keep row group (maybe)
-                result[row_group_idx] = true;
+                *result_item = true;
             }
         }
     }
@@ -479,7 +487,6 @@ fn evaluate_is_not_null(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::row_index::{RowGroupEntry, RowGroupIndex, StripeRowIndex};
     use crate::statistics::ColumnStatistics;
     use crate::proto;
@@ -496,28 +503,32 @@ mod tests {
         let age_entries = vec![
             RowGroupEntry::new(
                 Some({
-                    let mut proto_stats = proto::ColumnStatistics::default();
-                    proto_stats.number_of_values = Some(5000);
-                    proto_stats.has_null = Some(false);
-                    proto_stats.int_statistics = Some(proto::IntegerStatistics {
-                        minimum: Some(18),
-                        maximum: Some(25),
-                        sum: Some(107500),
-                    });
+                    let proto_stats = proto::ColumnStatistics {
+                        number_of_values: Some(5000),
+                        has_null: Some(false),
+                        int_statistics: Some(proto::IntegerStatistics {
+                            minimum: Some(18),
+                            maximum: Some(25),
+                            sum: Some(107500),
+                        }),
+                        ..Default::default()
+                    };
                     ColumnStatistics::try_from(&proto_stats).unwrap()
                 }),
                 vec![],
             ),
             RowGroupEntry::new(
                 Some({
-                    let mut proto_stats = proto::ColumnStatistics::default();
-                    proto_stats.number_of_values = Some(5000);
-                    proto_stats.has_null = Some(false);
-                    proto_stats.int_statistics = Some(proto::IntegerStatistics {
-                        minimum: Some(26),
-                        maximum: Some(65),
-                        sum: Some(227500),
-                    });
+                    let proto_stats = proto::ColumnStatistics {
+                        number_of_values: Some(5000),
+                        has_null: Some(false),
+                        int_statistics: Some(proto::IntegerStatistics {
+                            minimum: Some(26),
+                            maximum: Some(65),
+                            sum: Some(227500),
+                        }),
+                        ..Default::default()
+                    };
                     ColumnStatistics::try_from(&proto_stats).unwrap()
                 }),
                 vec![],

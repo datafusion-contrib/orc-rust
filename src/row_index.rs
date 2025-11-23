@@ -152,7 +152,7 @@ impl StripeRowIndex {
         if self.rows_per_group == 0 {
             return 0;
         }
-        (self.total_rows + self.rows_per_group - 1) / self.rows_per_group
+        self.total_rows.div_ceil(self.rows_per_group)
     }
 
     /// Get statistics for a specific row group and column
@@ -196,7 +196,7 @@ fn parse_row_index(
             let statistics = entry
                 .statistics
                 .as_ref()
-                .map(|s| ColumnStatistics::try_from(s))
+                .map(ColumnStatistics::try_from)
                 .transpose()?;
             Ok(RowGroupEntry::new(statistics, entry.positions.clone()))
         })

@@ -179,6 +179,7 @@ impl Predicate {
     }
 
     /// Negate a predicate
+    #[allow(clippy::should_implement_trait)]
     pub fn not(predicate: Predicate) -> Self {
         Self::Not(Box::new(predicate))
     }
