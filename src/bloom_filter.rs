@@ -282,9 +282,7 @@ fn murmur3_64(data: &[u8]) -> u64 {
             val
         } else {
             let mut bytes = [0u8; 8];
-            for j in 0..remaining {
-                bytes[j] = data[i + j];
-            }
+            bytes[..remaining].copy_from_slice(&data[i..(remaining + i)]);
             i = data.len();
             u64::from_le_bytes(bytes)
         };
@@ -297,9 +295,7 @@ fn murmur3_64(data: &[u8]) -> u64 {
         if i < data.len() {
             let remaining = data.len() - i;
             let mut bytes = [0u8; 8];
-            for j in 0..remaining {
-                bytes[j] = data[i + j];
-            }
+            bytes[..remaining].copy_from_slice(&data[i..(remaining + i)]);
             let mut k2 = u64::from_le_bytes(bytes);
             k2 = k2.wrapping_mul(C2);
             k2 = k2.rotate_left(R2);
@@ -311,7 +307,6 @@ fn murmur3_64(data: &[u8]) -> u64 {
     h1 ^= data.len() as u64;
     h2 ^= data.len() as u64;
 
-    // Both operations must use the original values, not the updated ones
     let h1_orig = h1;
     let h2_orig = h2;
     h1 = h1_orig.wrapping_add(h2_orig);
@@ -320,11 +315,10 @@ fn murmur3_64(data: &[u8]) -> u64 {
     h1 = fmix64(h1);
     h2 = fmix64(h2);
 
-    // Again, both operations must use the original values
     let h1_orig = h1;
     let h2_orig = h2;
     h1 = h1_orig.wrapping_add(h2_orig);
-    h2 = h2_orig.wrapping_add(h1_orig); // Update h2 for algorithm completeness per Murmur3-128 spec, even though we only return h1
+    h2 = h2_orig.wrapping_add(h1);
 
     h1
 }
