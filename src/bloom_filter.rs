@@ -413,10 +413,10 @@ mod tests {
 
         // Value 999 should likely not be found (unless there's a false positive)
         // We test that the function doesn't crash and returns a boolean
-        let result = filter
+        let _result = filter
             .might_contain(&PredicateValue::Int64(Some(999)))
             .unwrap();
-        assert!(result == true || result == false); // Valid boolean result
+        // Function successfully returned a boolean value (no panic)
     }
 
     #[test]
@@ -453,10 +453,10 @@ mod tests {
             .unwrap());
 
         // Value "different_string" should likely not be found (unless there's a false positive)
-        let result = filter
+        let _result = filter
             .might_contain(&PredicateValue::Utf8(Some("different_string".to_string())))
             .unwrap();
-        assert!(result == true || result == false); // Valid boolean result
+        // Function successfully returned a boolean value (no panic)
     }
 
     #[test]
