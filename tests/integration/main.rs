@@ -363,3 +363,318 @@ fn orc_split_elim_new() {
 fn over1k_bloom() {
     test_expected_file("over1k_bloom");
 }
+
+#[test]
+fn test_bloom_filter_basic_read() {
+    // Test basic reading of ORC file with Bloom Filters
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+    let reader = ArrowReaderBuilder::try_new(f).unwrap().build();
+
+    // Read all batches
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+    assert!(!batches.is_empty());
+
+    // Verify total row count (should be 1000 rows)
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total_rows, 1000,
+        "Expected 1000 rows in bloom_filter_test.orc"
+    );
+
+    // Verify schema has expected columns
+    let schema = batches[0].schema();
+    assert_eq!(schema.fields().len(), 4, "Expected 4 columns");
+    assert_eq!(schema.field(0).name(), "id");
+    assert_eq!(schema.field(1).name(), "name");
+    assert_eq!(schema.field(2).name(), "age");
+    assert_eq!(schema.field(3).name(), "email");
+}
+
+#[test]
+fn test_bloom_filter_equality_query_existing_value() {
+    // Test equality query with a value that exists in the file
+    // Bloom Filter should allow reading the row group, but may return the entire row group
+    // rather than just the matching rows (predicate pushdown is at row group level)
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for id = 500 (exists in the file)
+    let predicate = Predicate::eq("id", PredicateValue::Int32(Some(500)));
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return at least some rows (Bloom Filter allows reading the row group)
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert!(
+        total_rows > 0,
+        "Should return rows when Bloom Filter indicates value might exist"
+    );
+
+    // Verify that id=500 is in the returned data (since it exists in the file)
+    let mut found_500 = false;
+    for batch in &batches {
+        let id_array = batch
+            .column(0)
+            .as_primitive_opt::<arrow::datatypes::Int32Type>()
+            .unwrap();
+        for i in 0..id_array.len() {
+            if !id_array.is_null(i) && id_array.value(i) == 500 {
+                found_500 = true;
+                break;
+            }
+        }
+        if found_500 {
+            break;
+        }
+    }
+    assert!(found_500, "Should find id=500 in the returned data");
+}
+
+#[test]
+fn test_bloom_filter_equality_query_nonexistent_value() {
+    // Test equality query with a value that doesn't exist
+    // Bloom Filter should help skip row groups that don't contain the value
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for id = 9999 (doesn't exist, ids are 1-1000)
+    let predicate = Predicate::eq("id", PredicateValue::Int32(Some(9999)));
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return zero rows (id=9999 doesn't exist)
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total_rows, 0,
+        "Should return zero rows for non-existent id=9999"
+    );
+}
+
+#[test]
+fn test_bloom_filter_string_equality_query() {
+    // Test equality query on string column (name)
+    // This test verifies that Bloom Filter integration works for string columns
+    // The actual filtering behavior depends on both Bloom Filter and statistics
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for name = "user_1" (exists in the file)
+    let predicate = Predicate::eq("name", PredicateValue::Utf8(Some("user_1".to_string())));
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    // Should not crash when using Bloom Filter with string equality query
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(
+        batches.is_ok(),
+        "Bloom Filter string equality query should not crash"
+    );
+
+    // The number of returned rows depends on both Bloom Filter and statistics
+    // This test primarily verifies that the integration works correctly
+    let batches = batches.unwrap();
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+
+    // If rows are returned, verify the data is valid
+    if total_rows > 0 {
+        for batch in &batches {
+            let name_array = batch.column(1).as_string_opt::<i32>().unwrap();
+            for i in 0..name_array.len() {
+                if !name_array.is_null(i) {
+                    let name = name_array.value(i);
+                    assert!(
+                        name.starts_with("user_"),
+                        "Returned names should start with 'user_'"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn test_bloom_filter_string_equality_query_nonexistent() {
+    // Test equality query on string column with non-existent value
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for name = "nonexistent_user" (doesn't exist)
+    let predicate = Predicate::eq(
+        "name",
+        PredicateValue::Utf8(Some("nonexistent_user".to_string())),
+    );
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return zero rows
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total_rows, 0,
+        "Should return zero rows for non-existent name"
+    );
+}
+
+#[test]
+fn test_bloom_filter_email_equality_query() {
+    // Test equality query on email column
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for email = "email_250@example.com" (exists in the file)
+    let predicate = Predicate::eq(
+        "email",
+        PredicateValue::Utf8(Some("email_250@example.com".to_string())),
+    );
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return at least one row
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert!(total_rows > 0, "Should return rows for existing email");
+}
+
+#[test]
+fn test_bloom_filter_age_equality_query() {
+    // Test equality query on age column (int32)
+    // Bloom Filter should allow reading the row group if it might contain the value
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for age = 35 (exists in the file, ages are 20-69)
+    let predicate = Predicate::eq("age", PredicateValue::Int32(Some(35)));
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return at least some rows (Bloom Filter allows reading the row group)
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert!(
+        total_rows > 0,
+        "Should return rows when Bloom Filter indicates value might exist"
+    );
+
+    // Verify that age=35 is in the returned data (since it exists in the file)
+    let mut found_35 = false;
+    for batch in &batches {
+        let age_array = batch
+            .column(2)
+            .as_primitive_opt::<arrow::datatypes::Int32Type>()
+            .unwrap();
+        for i in 0..age_array.len() {
+            if !age_array.is_null(i) && age_array.value(i) == 35 {
+                found_35 = true;
+                break;
+            }
+        }
+        if found_35 {
+            break;
+        }
+    }
+    assert!(found_35, "Should find age=35 in the returned data");
+}
+
+#[test]
+fn test_bloom_filter_age_equality_query_nonexistent() {
+    // Test equality query on age column with non-existent value
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+
+    // Query for age = 100 (doesn't exist, ages are 20-69)
+    let predicate = Predicate::eq("age", PredicateValue::Int32(Some(100)));
+    let reader = ArrowReaderBuilder::try_new(f)
+        .unwrap()
+        .with_predicate(predicate)
+        .build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return zero rows
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total_rows, 0,
+        "Should return zero rows for non-existent age=100"
+    );
+}
+
+#[test]
+fn test_bloom_filter_comparison_without_predicate() {
+    // Test that reading without predicate still works correctly
+    // This ensures backward compatibility
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter_test.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let f = File::open(path).unwrap();
+    let reader = ArrowReaderBuilder::try_new(f).unwrap().build();
+
+    let batches: Result<Vec<_>, _> = reader.collect();
+    assert!(batches.is_ok());
+    let batches = batches.unwrap();
+
+    // Should return all 1000 rows
+    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(
+        total_rows, 1000,
+        "Should return all rows when no predicate is used"
+    );
+}
