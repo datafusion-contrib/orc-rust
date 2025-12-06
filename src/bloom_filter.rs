@@ -210,6 +210,7 @@ fn thomas_wang_hash64(key: i64) -> u64 {
 /// Murmur3 64-bit hash function
 ///
 /// This is used for string and binary types in ORC Bloom Filters.
+#[allow(unused_assignments)]
 fn murmur3_64(data: &[u8]) -> u64 {
     const C1: u64 = 0x87c37b91_114253d5;
     const C2: u64 = 0x4cf5ad43_2745937f;
@@ -310,14 +311,20 @@ fn murmur3_64(data: &[u8]) -> u64 {
     h1 ^= data.len() as u64;
     h2 ^= data.len() as u64;
 
-    h1 = h1.wrapping_add(h2);
-    h2 = h2.wrapping_add(h1);
+    // Both operations must use the original values, not the updated ones
+    let h1_orig = h1;
+    let h2_orig = h2;
+    h1 = h1_orig.wrapping_add(h2_orig);
+    h2 = h2_orig.wrapping_add(h1_orig);
 
     h1 = fmix64(h1);
     h2 = fmix64(h2);
 
-    h1 = h1.wrapping_add(h2);
-    let _ = h2.wrapping_add(h1); // h2 is part of the hash computation but final result is h1
+    // Again, both operations must use the original values
+    let h1_orig = h1;
+    let h2_orig = h2;
+    h1 = h1_orig.wrapping_add(h2_orig);
+    h2 = h2_orig.wrapping_add(h1_orig); // Update h2 for algorithm completeness per Murmur3-128 spec, even though we only return h1
 
     h1
 }
