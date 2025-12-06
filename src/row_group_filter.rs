@@ -136,6 +136,8 @@ fn evaluate_comparison(
     schema: &RootDataType,
     result: &mut [bool],
 ) -> Result<()> {
+    use crate::predicate::ComparisonOp;
+
     // Find column index
     let column_idx = find_column_index(schema, column)?;
 
@@ -156,6 +158,26 @@ fn evaluate_comparison(
                 "Row group entry not found for column {column_idx}, row group {row_group_idx}",
             ),
         })?;
+
+        // For equality queries, check Bloom Filter first (if available)
+        if op == ComparisonOp::Equal {
+            if let Some(bloom_filter) = &entry.bloom_filter {
+                // Check if value might be present in Bloom Filter
+                match bloom_filter.might_contain(value) {
+                    Ok(false) => {
+                        // Bloom Filter says value is definitely not present
+                        *result_item = false;
+                        continue;
+                    }
+                    Ok(true) => {
+                        // Bloom Filter says value might be present, continue with statistics check
+                    }
+                    Err(_) => {
+                        // Error checking Bloom Filter, fall back to statistics
+                    }
+                }
+            }
+        }
 
         // Get statistics for this row group
         if let Some(stats) = &entry.statistics {
