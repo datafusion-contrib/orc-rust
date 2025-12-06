@@ -379,18 +379,117 @@ mod tests {
 
     #[test]
     fn test_bloom_filter_int64() {
-        // Create a simple Bloom Filter with one bit set
-        // This is a simplified test - in practice, we'd need to properly construct
-        // a Bloom Filter with actual hash positions set
+        // Test Bloom Filter with integer values
+        // Since Bloom Filter construction is deterministic, we can properly test it
+
+        // Create a Bloom Filter that contains value 42
+        let value = 42i64;
+        let num_hash_functions = 3;
+        let num_bits = 64; // Use one u64 word (64 bits)
+        let hash = thomas_wang_hash64(value);
+
+        // Calculate which bits should be set for this value
+        let mut bitset = vec![0u64; 1]; // One word
+        for i in 0..num_hash_functions {
+            let hash_value = hash.wrapping_add(i as u64).wrapping_mul(0x9e3779b97f4a7c15);
+            let bit_pos = (hash_value % (num_bits as u64)) as usize;
+            let word_idx = bit_pos / 64;
+            let bit_idx = bit_pos % 64;
+            bitset[word_idx] |= 1u64 << bit_idx;
+        }
+
         let proto = crate::proto::BloomFilter {
-            num_hash_functions: Some(3),
-            bitset: vec![1], // First bit is set
+            num_hash_functions: Some(num_hash_functions),
+            bitset,
             utf8bitset: None,
         };
 
         let filter = BloomFilter::from_proto(&proto).unwrap();
-        // Since we can't easily construct a valid Bloom Filter without knowing
-        // the exact hash values, we just test that it doesn't crash
-        let _ = filter.might_contain(&PredicateValue::Int64(Some(42)));
+
+        // Value 42 should be found (we constructed the filter with it)
+        assert!(filter
+            .might_contain(&PredicateValue::Int64(Some(value)))
+            .unwrap());
+
+        // Value 999 should likely not be found (unless there's a false positive)
+        // We test that the function doesn't crash and returns a boolean
+        let result = filter
+            .might_contain(&PredicateValue::Int64(Some(999)))
+            .unwrap();
+        assert!(result == true || result == false); // Valid boolean result
+    }
+
+    #[test]
+    fn test_bloom_filter_string() {
+        // Test Bloom Filter with string values
+        // Since Bloom Filter construction is deterministic, we can properly test it
+
+        let value = "test_string";
+        let num_hash_functions = 3;
+        let num_bits = 64; // Use 8 bytes (64 bits)
+        let hash = murmur3_64(value.as_bytes());
+
+        // Calculate which bits should be set for this value
+        let mut bitset = vec![0u8; 8]; // 8 bytes = 64 bits
+        for i in 0..num_hash_functions {
+            let hash_value = hash.wrapping_add(i as u64).wrapping_mul(0x9e3779b97f4a7c15);
+            let bit_pos = (hash_value % (num_bits as u64)) as usize;
+            let byte_idx = bit_pos / 8;
+            let bit_idx = bit_pos % 8;
+            bitset[byte_idx] |= 1u8 << bit_idx;
+        }
+
+        let proto = crate::proto::BloomFilter {
+            num_hash_functions: Some(num_hash_functions),
+            bitset: vec![], // Empty for UTF8 bitset
+            utf8bitset: Some(bitset),
+        };
+
+        let filter = BloomFilter::from_proto(&proto).unwrap();
+
+        // Value "test_string" should be found (we constructed the filter with it)
+        assert!(filter
+            .might_contain(&PredicateValue::Utf8(Some(value.to_string())))
+            .unwrap());
+
+        // Value "different_string" should likely not be found (unless there's a false positive)
+        let result = filter
+            .might_contain(&PredicateValue::Utf8(Some("different_string".to_string())))
+            .unwrap();
+        assert!(result == true || result == false); // Valid boolean result
+    }
+
+    #[test]
+    fn test_bloom_filter_deterministic() {
+        // Test that Bloom Filter behavior is deterministic
+        // Same value should always produce the same hash and bit positions
+
+        let value = 12345i64;
+        let num_hash_functions = 3;
+        let num_bits = 64;
+        let hash1 = thomas_wang_hash64(value);
+        let hash2 = thomas_wang_hash64(value);
+
+        // Hash should be deterministic
+        assert_eq!(hash1, hash2);
+
+        // Calculate bit positions for both hashes (should be identical)
+        let mut positions1 = Vec::new();
+        let mut positions2 = Vec::new();
+        for i in 0..num_hash_functions {
+            let hash_value1 = hash1
+                .wrapping_add(i as u64)
+                .wrapping_mul(0x9e3779b97f4a7c15);
+            let hash_value2 = hash2
+                .wrapping_add(i as u64)
+                .wrapping_mul(0x9e3779b97f4a7c15);
+            let bit_pos1 = (hash_value1 % (num_bits as u64)) as usize;
+            let bit_pos2 = (hash_value2 % (num_bits as u64)) as usize;
+            positions1.push(bit_pos1);
+            positions2.push(bit_pos2);
+        }
+
+        // Bit positions should be identical
+        assert_eq!(positions1, positions2);
     }
 }
