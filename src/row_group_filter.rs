@@ -136,6 +136,8 @@ fn evaluate_comparison(
     schema: &RootDataType,
     result: &mut [bool],
 ) -> Result<()> {
+    use crate::predicate::ComparisonOp;
+
     // Find column index
     let column_idx = find_column_index(schema, column)?;
 
@@ -157,13 +159,46 @@ fn evaluate_comparison(
             ),
         })?;
 
-        // Get statistics for this row group
+        // First, check statistics (faster than Bloom Filter)
         if let Some(stats) = &entry.statistics {
             let matches = evaluate_comparison_with_stats(stats, op, value)?;
             *result_item = matches;
+
+            // If statistics indicate the row group doesn't match, skip Bloom Filter check
+            if !matches {
+                continue;
+            }
         } else {
             // No statistics available, keep row group (maybe)
             *result_item = true;
+        }
+
+        // For equality queries, check Bloom Filter after statistics (if statistics passed)
+        // Bloom Filter is slower to check (requires hash computation), so we only use it
+        // if statistics couldn't rule out the row group
+        if op == ComparisonOp::Equal {
+            if let Some(bloom_filter) = &entry.bloom_filter {
+                // Check if value might be present in Bloom Filter
+                match bloom_filter.might_contain(value) {
+                    // Bloom Filter says value is definitely not present
+                    Ok(false) => {
+                        *result_item = false;
+                        continue;
+                    }
+                    Ok(true) => {
+                        // Bloom Filter says value might be present, keep the result from statistics
+                    }
+                    Err(e) => {
+                        // Error checking Bloom Filter, keep the result from statistics
+                        log::error!(
+                            "Error checking Bloom Filter for column '{}', row group {}: {}",
+                            column,
+                            row_group_idx,
+                            e
+                        );
+                    }
+                }
+            }
         }
     }
 

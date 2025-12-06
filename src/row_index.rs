@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 
+use crate::bloom_filter::BloomFilter;
 use crate::error::Result;
 use crate::proto;
 use crate::statistics::ColumnStatistics;
@@ -32,6 +33,7 @@ use crate::statistics::ColumnStatistics;
 /// According to ORC spec, each entry contains:
 /// - Statistics for the row group (min/max/null count)
 /// - Stream positions for seeking to the row group (for future use)
+/// - Optional Bloom Filter for equality query optimization
 #[derive(Debug, Clone)]
 pub struct RowGroupEntry {
     /// Statistics for this row group
@@ -48,6 +50,12 @@ pub struct RowGroupEntry {
     ///
     /// Note: Dictionary positions are NOT included (dictionary must be fully read)
     pub positions: Vec<u64>,
+
+    /// Optional Bloom Filter for this row group
+    ///
+    /// Bloom Filters are used to optimize equality queries by quickly
+    /// determining if a value might exist in the row group.
+    pub bloom_filter: Option<BloomFilter>,
 }
 
 impl RowGroupEntry {
@@ -55,6 +63,19 @@ impl RowGroupEntry {
         Self {
             statistics,
             positions,
+            bloom_filter: None,
+        }
+    }
+
+    pub fn with_bloom_filter(
+        statistics: Option<ColumnStatistics>,
+        positions: Vec<u64>,
+        bloom_filter: Option<BloomFilter>,
+    ) -> Self {
+        Self {
+            statistics,
+            positions,
+            bloom_filter,
         }
     }
 }
@@ -115,6 +136,13 @@ impl RowGroupIndex {
     pub fn entry(&self, row_group_idx: usize) -> Option<&RowGroupEntry> {
         self.entries.get(row_group_idx)
     }
+
+    /// Get Bloom Filter for a specific row group
+    pub fn row_group_bloom_filter(&self, row_group_idx: usize) -> Option<&BloomFilter> {
+        self.entries
+            .get(row_group_idx)
+            .and_then(|entry| entry.bloom_filter.as_ref())
+    }
 }
 
 /// Row indexes for all columns in a stripe
@@ -169,6 +197,16 @@ impl StripeRowIndex {
             .and_then(|col_index| col_index.row_group_stats(row_group_idx))
     }
 
+    /// Get Bloom Filter for a specific row group and column
+    pub fn row_group_bloom_filter(
+        &self,
+        column_idx: usize,
+        row_group_idx: usize,
+    ) -> Option<&BloomFilter> {
+        self.column(column_idx)
+            .and_then(|col_index| col_index.row_group_bloom_filter(row_group_idx))
+    }
+
     /// Get the total number of rows in this stripe
     pub fn total_rows(&self) -> usize {
         self.total_rows
@@ -185,38 +223,15 @@ impl StripeRowIndex {
     }
 }
 
-/// Parse a `RowIndex` protobuf message into a `RowGroupIndex`
-fn parse_row_index(
-    proto: &proto::RowIndex,
-    column_index: usize,
-    rows_per_group: usize,
-) -> Result<RowGroupIndex> {
-    use crate::statistics::ColumnStatistics;
-
-    let entries: Result<Vec<RowGroupEntry>> = proto
-        .entry
-        .iter()
-        .map(|entry| {
-            let statistics = entry
-                .statistics
-                .as_ref()
-                .map(ColumnStatistics::try_from)
-                .transpose()?;
-            Ok(RowGroupEntry::new(statistics, entry.positions.clone()))
-        })
-        .collect();
-
-    Ok(RowGroupIndex::new(entries?, rows_per_group, column_index))
-}
-
 /// Parse row indexes from a stripe
 ///
 /// According to ORC spec:
 /// - Only primitive columns have row indexes
 /// - Row indexes are stored in ROW_INDEX streams in the index section
+/// - Bloom Filters are stored in BLOOM_FILTER or BLOOM_FILTER_UTF8 streams
 /// - Indexes are only loaded when predicate pushdown is used or seeking
 ///
-/// This function parses all ROW_INDEX streams from the stripe's stream map.
+/// This function parses all ROW_INDEX streams and Bloom Filter streams from the stripe's stream map.
 pub fn parse_stripe_row_indexes(
     stripe_stream_map: &crate::stripe::StreamMap,
     columns: &[crate::column::Column],
@@ -245,14 +260,96 @@ pub fn parse_stripe_row_indexes(
             let proto_row_index =
                 proto::RowIndex::decode(buffer.as_slice()).context(DecodeProtoSnafu)?;
 
-            // Parse into RowGroupIndex
-            let row_group_index =
-                parse_row_index(&proto_row_index, column_id as usize, rows_per_group)?;
+            // Parse Bloom Filter index if available
+            let bloom_filters =
+                parse_bloom_filter_index(stripe_stream_map, column, proto_row_index.entry.len())?;
+
+            // Parse into RowGroupIndex with Bloom Filters
+            let row_group_index = parse_row_index_with_bloom_filters(
+                &proto_row_index,
+                column_id as usize,
+                rows_per_group,
+                bloom_filters,
+            )?;
             row_indexes.insert(column_id as usize, row_group_index);
         }
     }
 
     Ok(StripeRowIndex::new(row_indexes, total_rows, rows_per_group))
+}
+
+/// Parse Bloom Filter index for a column
+fn parse_bloom_filter_index(
+    stripe_stream_map: &crate::stripe::StreamMap,
+    column: &crate::column::Column,
+    num_row_groups: usize,
+) -> Result<Vec<Option<BloomFilter>>> {
+    use crate::error::{DecodeProtoSnafu, IoSnafu};
+    use crate::proto::stream::Kind;
+    use prost::Message;
+    use snafu::ResultExt;
+
+    // Try BLOOM_FILTER_UTF8 first (for string columns), then BLOOM_FILTER
+    let bloom_stream = stripe_stream_map
+        .get_opt(column, Kind::BloomFilterUtf8)
+        .or_else(|| stripe_stream_map.get_opt(column, Kind::BloomFilter));
+
+    if let Some(mut decompressor) = bloom_stream {
+        // Decompress the stream
+        let mut buffer = Vec::new();
+        std::io::Read::read_to_end(&mut decompressor, &mut buffer).context(IoSnafu)?;
+
+        // Parse the protobuf message
+        let proto_bloom_index =
+            proto::BloomFilterIndex::decode(buffer.as_slice()).context(DecodeProtoSnafu)?;
+
+        // Convert to Vec<Option<BloomFilter>>
+        let mut bloom_filters = Vec::with_capacity(num_row_groups);
+        for proto_bloom in proto_bloom_index.bloom_filter {
+            bloom_filters.push(Some(BloomFilter::from_proto(&proto_bloom)?));
+        }
+
+        // Ensure we have the right number of entries (pad with None if needed)
+        while bloom_filters.len() < num_row_groups {
+            bloom_filters.push(None);
+        }
+
+        Ok(bloom_filters)
+    } else {
+        // No Bloom Filter stream available
+        Ok(vec![None; num_row_groups])
+    }
+}
+
+/// Parse a `RowIndex` protobuf message into a `RowGroupIndex` with Bloom Filters
+fn parse_row_index_with_bloom_filters(
+    proto: &proto::RowIndex,
+    column_index: usize,
+    rows_per_group: usize,
+    bloom_filters: Vec<Option<BloomFilter>>,
+) -> Result<RowGroupIndex> {
+    use crate::statistics::ColumnStatistics;
+
+    let entries: Result<Vec<RowGroupEntry>> = proto
+        .entry
+        .iter()
+        .enumerate()
+        .map(|(idx, entry)| {
+            let statistics = entry
+                .statistics
+                .as_ref()
+                .map(ColumnStatistics::try_from)
+                .transpose()?;
+            let bloom_filter = bloom_filters.get(idx).and_then(|bf| bf.clone());
+            Ok(RowGroupEntry::with_bloom_filter(
+                statistics,
+                entry.positions.clone(),
+                bloom_filter,
+            ))
+        })
+        .collect();
+
+    Ok(RowGroupIndex::new(entries?, rows_per_group, column_index))
 }
 
 #[cfg(test)]
