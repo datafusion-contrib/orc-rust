@@ -365,35 +365,8 @@ fn over1k_bloom() {
 }
 
 #[test]
-fn test_bloom_filter_basic_read() {
-    // Test basic reading of ORC file with Bloom Filters
-    let path = format!(
-        "{}/tests/integration/data/bloom_filter_test.orc",
-        env!("CARGO_MANIFEST_DIR"),
-    );
-    let f = File::open(path).unwrap();
-    let reader = ArrowReaderBuilder::try_new(f).unwrap().build();
-
-    // Read all batches
-    let batches: Result<Vec<_>, _> = reader.collect();
-    assert!(batches.is_ok());
-    let batches = batches.unwrap();
-    assert!(!batches.is_empty());
-
-    // Verify total row count (should be 1000 rows)
-    let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(
-        total_rows, 1000,
-        "Expected 1000 rows in bloom_filter_test.orc"
-    );
-
-    // Verify schema has expected columns
-    let schema = batches[0].schema();
-    assert_eq!(schema.fields().len(), 4, "Expected 4 columns");
-    assert_eq!(schema.field(0).name(), "id");
-    assert_eq!(schema.field(1).name(), "name");
-    assert_eq!(schema.field(2).name(), "age");
-    assert_eq!(schema.field(3).name(), "email");
+fn bloom_filter_test() {
+    test_expected_file("bloom_filter_test");
 }
 
 #[test]

@@ -98,8 +98,29 @@ try:
     else:
         print(f"\n✓ File size is suitable for repository ({file_size_kb:.2f} KB)")
     
+    # Generate corresponding feather file for test_expected_file
+    print(f"\nGenerating Feather file for test_expected_file...")
+    expected_arrow_dir = os.path.join(BASE_DIR, "tests", "integration", "data", "expected_arrow")
+    os.makedirs(expected_arrow_dir, exist_ok=True)
+    feather_file = os.path.join(expected_arrow_dir, "bloom_filter_test.feather")
+    
+    # Read the ORC file we just created and write it as feather
+    with open(output_file, 'rb') as f:
+        reader = orc.ORCFile(f)
+        table = reader.read()
+    
+    # Write to feather file
+    import pyarrow.feather as feather
+    feather.write_feather(table, feather_file)
+    
+    feather_size = os.path.getsize(feather_file)
+    feather_size_kb = feather_size / 1024
+    
+    print(f"✓ Successfully generated: {feather_file}")
+    print(f"  - File size: {feather_size:,} bytes ({feather_size_kb:.2f} KB)")
+    
     print(f"\nYou can now run tests:")
-    print(f"  cargo test --test integration test_bloom_filter")
+    print(f"  cargo test --test integration bloom_filter_test")
     
 except ImportError as e:
     print("ERROR: PyArrow is not available!")
