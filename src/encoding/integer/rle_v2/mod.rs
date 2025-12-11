@@ -510,7 +510,7 @@ fn determine_variable_run_encoding<N: NInt, S: EncodingSign>(
     }
 
     // Aka 100th percentile
-    let base_reduced_literals_max_bit_width = max_data_value.closest_aligned_bit_width();
+    let base_reduced_literals_max_bit_width = max_data_value.bits_used();
     // 95th percentile width is used to find the 5% of values to encode with patches
     let base_reduced_literals_95th_percentile_bit_width =
         calculate_percentile_bits(&base_reduced_literals, 0.95);
