@@ -572,6 +572,21 @@ mod tests {
     }
 
     #[test]
+    fn writer_test_choose_direct_over_patched_base() {
+        let mut literals = [
+            0, 7, 6, 4, 5, 7, 0, 5, 6, 1, 4, 6, 5, 5, 3, 6, 7, 31, 17, 3,
+        ];
+        let expected = [
+            // data manually derived from input with ORC v2 Specification Draft
+            // direct encoding, BW=8, L=20
+            0x4e, 0x13, 0, 7, 6, 4, 5, 7, 0, 5, 6, 1, 4, 6, 5, 5, 3, 6, 7, 31, 17, 3,
+        ];
+        let mut writer = RleV2Encoder::<i64, UnsignedEncoding>::new();
+        determine_variable_run_encoding::<i64, UnsignedEncoding>(&mut writer.data, &mut literals);
+        assert_eq!(writer.data.to_byte_slice(), expected);
+    }
+
+    #[test]
     fn reader_test() {
         let data = [2, 1, 64, 5, 80, 1, 1];
         let expected = [1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1];
