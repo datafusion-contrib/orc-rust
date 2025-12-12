@@ -45,6 +45,8 @@ num = "0.4.1"
 prost = "0.13"
 snafu = "0.8"
 snap = "1.1"
+murmur3 = "0.5"
+log = "0.4"
 zstd = "0.13"
 
 # async support

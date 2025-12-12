@@ -22,8 +22,10 @@
 
 use crate::error::{Result, UnexpectedSnafu};
 use crate::predicate::{ComparisonOp, Predicate, PredicateValue};
+use crate::row_index::RowGroupEntry;
 use crate::row_index::StripeRowIndex;
 use crate::schema::RootDataType;
+use log::debug;
 use snafu::OptionExt;
 
 /// Evaluate a predicate against row group statistics
@@ -158,13 +160,20 @@ fn evaluate_comparison(
         })?;
 
         // Get statistics for this row group
-        if let Some(stats) = &entry.statistics {
-            let matches = evaluate_comparison_with_stats(stats, op, value)?;
-            *result_item = matches;
+        let stats_match = if let Some(stats) = &entry.statistics {
+            evaluate_comparison_with_stats(stats, op, value)?
         } else {
             // No statistics available, keep row group (maybe)
-            *result_item = true;
+            true
+        };
+
+        if !stats_match {
+            *result_item = false;
+            continue;
         }
+
+        // After statistics say "maybe", use bloom filter (if available) to rule out equality predicates
+        *result_item = row_group_might_match_bloom(entry, op, value);
     }
 
     Ok(())
@@ -318,6 +327,44 @@ fn evaluate_comparison_with_stats(
     };
 
     Ok(matches)
+}
+
+fn row_group_might_match_bloom(
+    entry: &RowGroupEntry,
+    op: ComparisonOp,
+    value: &PredicateValue,
+) -> bool {
+    // We only apply bloom filters for equality predicates; other comparisons
+    // still rely on min/max statistics.
+    if op != ComparisonOp::Equal {
+        return true;
+    }
+
+    let bloom_filter = match entry.bloom_filter.as_ref() {
+        Some(filter) => filter,
+        None => return true,
+    };
+
+    if let Some(bytes) = bloom_value_bytes(value) {
+        bloom_filter.might_contain(&bytes)
+    } else {
+        debug!("Skipping bloom filter: unsupported predicate value type");
+        true
+    }
+}
+
+fn bloom_value_bytes(value: &PredicateValue) -> Option<Vec<u8>> {
+    match value {
+        PredicateValue::Utf8(Some(v)) => Some(v.as_bytes().to_vec()),
+        PredicateValue::Int8(Some(v)) => Some((*v as i64).to_le_bytes().to_vec()),
+        PredicateValue::Int16(Some(v)) => Some((*v as i64).to_le_bytes().to_vec()),
+        PredicateValue::Int32(Some(v)) => Some((*v as i64).to_le_bytes().to_vec()),
+        PredicateValue::Int64(Some(v)) => Some((*v).to_le_bytes().to_vec()),
+        PredicateValue::Float32(Some(v)) => Some(v.to_bits().to_le_bytes().to_vec()),
+        PredicateValue::Float64(Some(v)) => Some(v.to_bits().to_le_bytes().to_vec()),
+        PredicateValue::Boolean(Some(v)) => Some(if *v { [1u8].to_vec() } else { [0u8].to_vec() }),
+        _ => None,
+    }
 }
 
 fn evaluate_integer_comparison(min: i64, max: i64, op: ComparisonOp, value: i64) -> bool {
@@ -478,6 +525,7 @@ fn evaluate_is_not_null(
 
 #[cfg(test)]
 mod tests {
+    use crate::bloom_filter::BloomFilter;
     use crate::proto;
     use crate::row_index::{RowGroupEntry, RowGroupIndex, StripeRowIndex};
     use crate::statistics::ColumnStatistics;
@@ -717,6 +765,94 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert!(!result[0]); // All values are 20, so skip
+    }
+
+    #[test]
+    fn test_bloom_filter_rejects_non_matching_value() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        // Build a bloom filter that only contains the value 10
+        let value = 10i64.to_le_bytes().to_vec();
+        let mut bitset = vec![0u64; 2];
+        let bit_count = bitset.len() * 64;
+        let hash = {
+            let mut cursor = std::io::Cursor::new(&value);
+            murmur3::murmur3_x64_128(&mut cursor, 0).unwrap()
+        };
+        let h1 = hash as u64;
+        let h2 = (hash >> 64) as u64;
+        let num_hash_functions = 3;
+        for i in 0..num_hash_functions {
+            let combined = h1.wrapping_add((i as u64).wrapping_mul(h2));
+            let bit_idx = (combined % (bit_count as u64)) as usize;
+            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
+        }
+        let bloom_filter = BloomFilter::from_parts(num_hash_functions, bitset);
+
+        // Attach bloom filter to a single row group
+        let entry = RowGroupEntry::new(None, vec![]).with_bloom_filter(Some(bloom_filter));
+        let mut columns = HashMap::new();
+        columns.insert(1, RowGroupIndex::new(vec![entry], 10000, 1));
+        let row_index = StripeRowIndex::new(columns, 10000, 10000);
+        let schema = create_test_schema();
+
+        // Predicate seeks value 20, which the bloom filter should reject
+        let predicate = Predicate::eq("age", PredicateValue::Int32(Some(20)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(!result[0]); // Bloom filter proves value 20 absent
+    }
+
+    #[test]
+    fn test_statistics_short_circuit_before_bloom_filter() {
+        use crate::predicate::{Predicate, PredicateValue};
+
+        // Build a bloom filter that claims value 50 may exist
+        let value = 50i64.to_le_bytes().to_vec();
+        let mut bitset = vec![0u64; 2];
+        let bit_count = bitset.len() * 64;
+        let hash = {
+            let mut cursor = std::io::Cursor::new(&value);
+            murmur3::murmur3_x64_128(&mut cursor, 0).unwrap()
+        };
+        let h1 = hash as u64;
+        let h2 = (hash >> 64) as u64;
+        let num_hash_functions = 3;
+        for i in 0..num_hash_functions {
+            let combined = h1.wrapping_add((i as u64).wrapping_mul(h2));
+            let bit_idx = (combined % (bit_count as u64)) as usize;
+            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
+        }
+        let bloom_filter = BloomFilter::from_parts(num_hash_functions, bitset);
+
+        // Row group stats that make the predicate impossible (min/max do not cover 50)
+        let stats = {
+            let proto_stats = proto::ColumnStatistics {
+                number_of_values: Some(1000),
+                has_null: Some(false),
+                int_statistics: Some(proto::IntegerStatistics {
+                    minimum: Some(100),
+                    maximum: Some(200),
+                    sum: Some(150000),
+                }),
+                ..Default::default()
+            };
+            ColumnStatistics::try_from(&proto_stats).unwrap()
+        };
+
+        let entry = RowGroupEntry::new(Some(stats), vec![]).with_bloom_filter(Some(bloom_filter));
+        let mut columns = HashMap::new();
+        columns.insert(1, RowGroupIndex::new(vec![entry], 10_000, 1));
+        let row_index = StripeRowIndex::new(columns, 10_000, 10_000);
+        let schema = create_test_schema();
+
+        // Predicate seeks value 50; stats should short-circuit to false regardless of bloom filter
+        let predicate = Predicate::eq("age", PredicateValue::Int32(Some(50)));
+        let result = super::evaluate_predicate(&predicate, &row_index, &schema).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(!result[0]); // min/max exclude 50, so stats short-circuit before bloom
     }
 
     #[test]
