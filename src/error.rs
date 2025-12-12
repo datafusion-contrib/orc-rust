@@ -70,6 +70,21 @@ pub enum OrcError {
         to_time_unit: TimeUnit,
     },
 
+    #[snafu(display(
+        "String/Binary data size ({} bytes) exceeds maximum offset size ({}) \
+         with current batch size {}. Please reduce the batch size to avoid offset overflow.",
+        total_length,
+        max_size,
+        batch_size,
+    ))]
+    OffsetOverflow {
+        #[snafu(implicit)]
+        location: Location,
+        total_length: i64,
+        max_size: i32,
+        batch_size: usize,
+    },
+
     #[snafu(display("Failed to decode proto, source: {}", source))]
     DecodeProto {
         #[snafu(implicit)]

@@ -23,14 +23,14 @@ use arrow::array::{ArrayRef, DictionaryArray, GenericByteArray, StringArray};
 use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow::compute::kernels::cast;
 use arrow::datatypes::{ByteArrayType, DataType, GenericBinaryType, GenericStringType};
-use snafu::ResultExt;
+use snafu::{ensure, ResultExt};
 
 use crate::array_decoder::derive_present_vec;
 use crate::column::Column;
 use crate::compression::Decompressor;
 use crate::encoding::integer::get_unsigned_int_decoder;
 use crate::encoding::PrimitiveValueDecoder;
-use crate::error::{ArrowSnafu, IoSnafu, Result};
+use crate::error::{ArrowSnafu, IoSnafu, OffsetOverflowSnafu, Result};
 use crate::proto::column_encoding::Kind as ColumnEncodingKind;
 use crate::proto::stream::Kind;
 use crate::stripe::Stripe;
@@ -123,6 +123,14 @@ impl<T: ByteArrayType> GenericByteArrayDecoder<T> {
             self.lengths.decode(&mut lengths)?;
         }
         let total_length: i64 = lengths.iter().sum();
+        ensure!(
+            total_length <= i32::MAX as i64,
+            OffsetOverflowSnafu {
+                total_length,
+                max_size: i32::MAX,
+                batch_size,
+            }
+        );
         // Fetch all data bytes at once
         let mut bytes = Vec::with_capacity(total_length as usize);
         self.bytes
