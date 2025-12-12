@@ -418,10 +418,61 @@ fn bloom_filter_predicate_prunes_non_matching() {
         .sum::<usize>();
     assert_eq!(rows_score, 0);
 
+    // event_date = 2023-01-02 (between 2023-01-01 and 2023-01-10)
+    let date = chrono::NaiveDate::from_ymd_opt(2023, 1, 2).unwrap();
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let days = (date - epoch).num_days();
+    let rows_date = make_reader(Predicate::eq(
+        "event_date",
+        PredicateValue::Int32(Some(days as i32)),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_date, 0);
+
+    // flag=true/false absent combinations: combine with missing id to ensure pruning
+    let rows_flag_and_id = make_reader(Predicate::and(vec![
+        Predicate::eq("flag", PredicateValue::Boolean(Some(true))),
+        Predicate::eq("id", PredicateValue::Int32(Some(2))),
+    ]))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_flag_and_id, 0);
+
+    // binary predicate: look for a value not present but within min/max range (byte 0x02 between 0x01 and 0x0a)
+    let rows_binary = make_reader(Predicate::eq(
+        "data",
+        PredicateValue::Utf8(Some("\u{0002}".to_string())),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_binary, 0);
+
+    // decimal predicate: look for 2.22 (between 1.11 and 10.10)
+    let rows_decimal = make_reader(Predicate::eq(
+        "dec",
+        PredicateValue::Utf8(Some("2.22".to_string())),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_decimal, 0);
+
     // Sanity: without predicate we should read all rows.
     let f_all = File::open(file_path).unwrap();
     let reader_all = ArrowReaderBuilder::try_new(f_all).unwrap().build();
     let all_batches = reader_all.collect::<Result<Vec<_>, _>>().unwrap();
     let total_rows: usize = all_batches.iter().map(|b| b.num_rows()).sum();
-    assert_eq!(total_rows, 4);
+    assert_eq!(total_rows, 204);
 }
