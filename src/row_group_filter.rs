@@ -20,6 +20,8 @@
 //! This module implements predicate evaluation against row group statistics
 //! to determine which row groups should be read or skipped.
 
+use std::borrow::Cow;
+
 use crate::error::{Result, UnexpectedSnafu};
 use crate::predicate::{ComparisonOp, Predicate, PredicateValue};
 use crate::row_index::RowGroupEntry;
@@ -334,8 +336,7 @@ fn row_group_might_match_bloom(
     op: ComparisonOp,
     value: &PredicateValue,
 ) -> bool {
-    // We only apply bloom filters for equality predicates; other comparisons
-    // still rely on min/max statistics.
+    // We only apply bloom filters for equality predicates
     if op != ComparisonOp::Equal {
         return true;
     }
@@ -353,16 +354,16 @@ fn row_group_might_match_bloom(
     }
 }
 
-fn bloom_value_bytes(value: &PredicateValue) -> Option<Vec<u8>> {
+fn bloom_value_bytes(value: &PredicateValue) -> Option<Cow<'_, [u8]>> {
     match value {
-        PredicateValue::Utf8(Some(v)) => Some(v.as_bytes().to_vec()),
-        PredicateValue::Int8(Some(v)) => Some((*v as i64).to_le_bytes().to_vec()),
-        PredicateValue::Int16(Some(v)) => Some((*v as i64).to_le_bytes().to_vec()),
-        PredicateValue::Int32(Some(v)) => Some((*v as i64).to_le_bytes().to_vec()),
-        PredicateValue::Int64(Some(v)) => Some((*v).to_le_bytes().to_vec()),
-        PredicateValue::Float32(Some(v)) => Some(v.to_bits().to_le_bytes().to_vec()),
-        PredicateValue::Float64(Some(v)) => Some(v.to_bits().to_le_bytes().to_vec()),
-        PredicateValue::Boolean(Some(v)) => Some(if *v { [1u8].to_vec() } else { [0u8].to_vec() }),
+        PredicateValue::Utf8(Some(v)) => Some(Cow::Borrowed(v.as_bytes())),
+        PredicateValue::Int8(Some(v)) => Some(Cow::Owned((*v as i64).to_le_bytes().to_vec())),
+        PredicateValue::Int16(Some(v)) => Some(Cow::Owned((*v as i64).to_le_bytes().to_vec())),
+        PredicateValue::Int32(Some(v)) => Some(Cow::Owned((*v as i64).to_le_bytes().to_vec())),
+        PredicateValue::Int64(Some(v)) => Some(Cow::Owned((*v).to_le_bytes().to_vec())),
+        PredicateValue::Float32(Some(v)) => Some(Cow::Owned(v.to_bits().to_le_bytes().to_vec())),
+        PredicateValue::Float64(Some(v)) => Some(Cow::Owned(v.to_bits().to_le_bytes().to_vec())),
+        PredicateValue::Boolean(Some(v)) => Some(Cow::Borrowed(if *v { &[1u8] } else { &[0u8] })),
         _ => None,
     }
 }
