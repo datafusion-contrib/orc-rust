@@ -64,6 +64,8 @@ tokio = { version = "1.28", optional = true, features = [
 # cli
 anyhow = { version = "1.0", optional = true }
 clap = { version = "4.5.4", features = ["derive"], optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", default-features = false, features = ["std"], optional = true }
 
 # opendal
 opendal = { version = "0.53", optional = true, default-features = false }
@@ -75,13 +77,12 @@ criterion = { version = "0.5", default-features = false, features = ["async_toki
 opendal = { version = "0.53", default-features = false, features = ["services-memory"] }
 pretty_assertions = "1.3.0"
 proptest = "1.0.0"
-serde_json = { version = "1.0", default-features = false, features = ["std"] }
 
 [features]
 default = ["async"]
 
 async = ["async-trait", "futures", "futures-util", "tokio"]
-cli = ["anyhow", "clap"]
+cli = ["anyhow", "clap", "serde", "serde_json"]
 # Enable opendal support.
 opendal = ["dep:opendal"]
 
@@ -105,4 +106,24 @@ required-features = ["cli"]
 
 [[bin]]
 name = "orc-stats"
+required-features = ["cli"]
+
+[[bin]]
+name = "orc-read"
+required-features = ["cli"]
+
+[[bin]]
+name = "orc-schema"
+required-features = ["cli"]
+
+[[bin]]
+name = "orc-rowcount"
+required-features = ["cli"]
+
+[[bin]]
+name = "orc-index"
+required-features = ["cli"]
+
+[[bin]]
+name = "orc-layout"
 required-features = ["cli"]

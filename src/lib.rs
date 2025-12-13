@@ -61,7 +61,7 @@ mod memory;
 pub mod predicate;
 pub mod projection;
 #[allow(dead_code)]
-mod proto;
+pub mod proto;
 pub mod reader;
 pub mod row_group_filter;
 pub mod row_index;
