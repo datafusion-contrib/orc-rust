@@ -41,6 +41,12 @@ pub struct BloomFilter {
 impl BloomFilter {
     /// Create a Bloom filter from a decoded protobuf value.
     pub fn try_from_proto(proto: &proto::BloomFilter) -> Option<Self> {
+        // Ensure only one of bitset / utf8bitset is populated
+        assert!(
+            proto.bitset.is_empty() || proto.utf8bitset.is_none(),
+            "Bloom filter proto has both bitset and utf8bitset populated"
+        );
+
         let num_hash_functions = proto.num_hash_functions();
         if proto.bitset.is_empty() && proto.utf8bitset.is_none() {
             return None;
@@ -79,6 +85,7 @@ impl BloomFilter {
         })
     }
 
+    #[cfg(test)]
     /// Create a Bloom filter from raw parts (mainly for tests)
     pub fn from_parts(num_hash_functions: u32, bitset: Vec<u64>) -> Self {
         Self {

@@ -271,6 +271,15 @@ pub fn parse_stripe_row_indexes(
     let bloom_filters = parse_bloom_filters(stripe_stream_map, columns)?;
     for (column_id, filters) in bloom_filters {
         if let Some(row_group_index) = row_indexes.get_mut(&column_id) {
+            let entry_count = row_group_index.num_row_groups();
+            assert_eq!(
+                entry_count,
+                filters.len(),
+                "Bloom filter count mismatch: expected {} but got {} for column {}",
+                entry_count,
+                filters.len(),
+                column_id
+            );
             for (entry, bloom) in row_group_index.entries_mut().zip(filters.into_iter()) {
                 entry.bloom_filter = Some(bloom);
             }
