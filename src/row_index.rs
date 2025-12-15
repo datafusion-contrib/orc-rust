@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 
+use crate::bloom_filter::BloomFilter;
 use crate::error::Result;
 use crate::proto;
 use crate::statistics::ColumnStatistics;
@@ -48,6 +49,9 @@ pub struct RowGroupEntry {
     ///
     /// Note: Dictionary positions are NOT included (dictionary must be fully read)
     pub positions: Vec<u64>,
+
+    /// Optional Bloom filter for this row group
+    pub bloom_filter: Option<BloomFilter>,
 }
 
 impl RowGroupEntry {
@@ -55,7 +59,13 @@ impl RowGroupEntry {
         Self {
             statistics,
             positions,
+            bloom_filter: None,
         }
+    }
+
+    pub fn with_bloom_filter(mut self, bloom_filter: Option<BloomFilter>) -> Self {
+        self.bloom_filter = bloom_filter;
+        self
     }
 }
 
@@ -109,6 +119,11 @@ impl RowGroupIndex {
     /// Get an iterator over row group entries
     pub fn entries(&self) -> impl Iterator<Item = &RowGroupEntry> {
         self.entries.iter()
+    }
+
+    /// Get a mutable iterator over row group entries
+    pub(crate) fn entries_mut(&mut self) -> impl Iterator<Item = &mut RowGroupEntry> {
+        self.entries.iter_mut()
     }
 
     /// Get a specific row group entry
@@ -252,7 +267,65 @@ pub fn parse_stripe_row_indexes(
         }
     }
 
+    // Attach bloom filters if present
+    let bloom_filters = parse_bloom_filters(stripe_stream_map, columns)?;
+    for (column_id, filters) in bloom_filters {
+        if let Some(row_group_index) = row_indexes.get_mut(&column_id) {
+            let entry_count = row_group_index.num_row_groups();
+            assert_eq!(
+                entry_count,
+                filters.len(),
+                "Bloom filter count mismatch: expected {} but got {} for column {}",
+                entry_count,
+                filters.len(),
+                column_id
+            );
+            for (entry, bloom) in row_group_index.entries_mut().zip(filters.into_iter()) {
+                entry.bloom_filter = Some(bloom);
+            }
+        }
+    }
+
     Ok(StripeRowIndex::new(row_indexes, total_rows, rows_per_group))
+}
+
+/// Parse Bloom filter indexes for the provided columns (if present)
+fn parse_bloom_filters(
+    stripe_stream_map: &crate::stripe::StreamMap,
+    columns: &[crate::column::Column],
+) -> Result<HashMap<usize, Vec<BloomFilter>>> {
+    use crate::error::{DecodeProtoSnafu, IoSnafu};
+    use crate::proto::stream::Kind;
+    use prost::Message;
+    use snafu::ResultExt;
+
+    let mut bloom_indexes = HashMap::new();
+
+    for column in columns {
+        let column_id = column.column_id();
+
+        let bloom_stream = stripe_stream_map
+            .get_opt(column, Kind::BloomFilter)
+            .or_else(|| stripe_stream_map.get_opt(column, Kind::BloomFilterUtf8));
+
+        if let Some(mut decompressor) = bloom_stream {
+            let mut buffer = Vec::new();
+            std::io::Read::read_to_end(&mut decompressor, &mut buffer).context(IoSnafu)?;
+
+            let proto_bloom_index =
+                proto::BloomFilterIndex::decode(buffer.as_slice()).context(DecodeProtoSnafu)?;
+
+            let filters: Vec<BloomFilter> = proto_bloom_index
+                .bloom_filter
+                .iter()
+                .filter_map(BloomFilter::try_from_proto)
+                .collect();
+
+            bloom_indexes.insert(column_id as usize, filters);
+        }
+    }
+
+    Ok(bloom_indexes)
 }
 
 #[cfg(test)]

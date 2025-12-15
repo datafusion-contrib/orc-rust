@@ -18,6 +18,7 @@
 /// Tests ORC files from the official test suite (`orc/examples/`) against Arrow feather
 /// expected data sourced by reading the ORC files with PyArrow and persisting as feather.
 use std::fs::File;
+use std::path::Path;
 
 use arrow::{
     array::{Array, AsArray},
@@ -362,4 +363,116 @@ fn orc_split_elim_new() {
 #[test]
 fn over1k_bloom() {
     test_expected_file("over1k_bloom");
+}
+
+#[test]
+fn bloom_filter() {
+    test_expected_file("bloom_filter");
+}
+
+#[test]
+fn bloom_filter_predicate_prunes_non_matching() {
+    let path = format!(
+        "{}/tests/integration/data/bloom_filter.orc",
+        env!("CARGO_MANIFEST_DIR"),
+    );
+    let file_path = Path::new(&path);
+
+    // Predicates target values absent from the file but inside min/max of the stripe,
+    // so statistics alone cannot prune; Bloom filters must be used.
+    let make_reader = |predicate: Predicate| {
+        let f = File::open(file_path).unwrap();
+        ArrowReaderBuilder::try_new(f)
+            .unwrap()
+            .with_predicate(predicate)
+            .build()
+    };
+
+    // id=2 (between 1 and 3)
+    let rows_id = make_reader(Predicate::eq("id", PredicateValue::Int32(Some(2))))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .iter()
+        .map(|b| b.num_rows())
+        .sum::<usize>();
+    assert_eq!(rows_id, 0);
+
+    // name="beta" (between "alpha" and "gamma")
+    let rows_name = make_reader(Predicate::eq(
+        "name",
+        PredicateValue::Utf8(Some("beta".to_string())),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_name, 0);
+
+    // score=2.0 (between 1.0 and 3.0)
+    let rows_score = make_reader(Predicate::eq("score", PredicateValue::Float64(Some(2.0))))
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .iter()
+        .map(|b| b.num_rows())
+        .sum::<usize>();
+    assert_eq!(rows_score, 0);
+
+    // event_date = 2023-01-02 (between 2023-01-01 and 2023-01-10)
+    let date = chrono::NaiveDate::from_ymd_opt(2023, 1, 2).unwrap();
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let days = (date - epoch).num_days();
+    let rows_date = make_reader(Predicate::eq(
+        "event_date",
+        PredicateValue::Int32(Some(days as i32)),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_date, 0);
+
+    // flag=true/false absent combinations: combine with missing id to ensure pruning
+    let rows_flag_and_id = make_reader(Predicate::and(vec![
+        Predicate::eq("flag", PredicateValue::Boolean(Some(true))),
+        Predicate::eq("id", PredicateValue::Int32(Some(2))),
+    ]))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_flag_and_id, 0);
+
+    // binary predicate: look for a value not present but within min/max range (byte 0x02 between 0x01 and 0x0a)
+    let rows_binary = make_reader(Predicate::eq(
+        "data",
+        PredicateValue::Utf8(Some("\u{0002}".to_string())),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_binary, 0);
+
+    // decimal predicate: look for 2.22 (between 1.11 and 10.10)
+    let rows_decimal = make_reader(Predicate::eq(
+        "dec",
+        PredicateValue::Utf8(Some("2.22".to_string())),
+    ))
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+    .iter()
+    .map(|b| b.num_rows())
+    .sum::<usize>();
+    assert_eq!(rows_decimal, 0);
+
+    // Sanity: without predicate we should read all rows.
+    let f_all = File::open(file_path).unwrap();
+    let reader_all = ArrowReaderBuilder::try_new(f_all).unwrap().build();
+    let all_batches = reader_all.collect::<Result<Vec<_>, _>>().unwrap();
+    let total_rows: usize = all_batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(total_rows, 204);
 }
