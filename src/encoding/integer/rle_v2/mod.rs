@@ -573,9 +573,7 @@ mod tests {
 
     #[test]
     fn writer_test_choose_direct_over_patched_base() {
-        let mut literals = [
-            0, 7, 6, 4, 5, 7, 0, 5, 6, 1, 4, 6, 5, 5, 3, 6, 7, 31, 17, 3,
-        ];
+        let mut literals = [0, 7, 6, 4, 5, 7, 0, 5, 6, 1, 4, 6, 5, 5, 3, 6, 7, 31, 17, 3];
         let expected = [
             // data manually derived from input with ORC v2 Specification Draft
             // direct encoding, BW=8, L=20
