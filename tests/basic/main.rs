@@ -253,6 +253,29 @@ pub fn basic_test_3() {
 }
 
 #[test]
+pub fn basic_test_bigint() {
+    let path = basic_path("test_bigint.orc");
+    let reader = new_arrow_reader(&path, &["id", "appl_no"]);
+    let batch = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+    let last_batch_idx = batch.len() - 1;
+    let total_rows = batch[last_batch_idx].num_rows();
+    let last_3_rows = batch[last_batch_idx].slice(total_rows - 3, 3);
+
+    let expected = [
+        "+--------------------+---------------------------+",
+        "| id                 | appl_no                   |",
+        "+--------------------+---------------------------+",
+        "| 492913             | 492913_suffix             |",
+        "| 580230855879884801 | 580230855879884801_suffix |",
+        "| 577557741563838464 | 577557741563838464_suffix |",
+        "+--------------------+---------------------------+",
+    ];
+
+    assert_batches_eq(&[last_3_rows], &expected);
+}
+
+#[test]
 pub fn basic_test_nested_struct() {
     let path = basic_path("nested_struct.orc");
     let reader = new_arrow_reader_root(&path);
