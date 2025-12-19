@@ -92,14 +92,14 @@ pub fn read_patched_base<N: NInt, R: Read, S: EncodingSign>(
     // TODO: document and explain below logic
     let mut patch_index = 0;
     let patch_mask = (1 << patch_bit_width) - 1;
-    let mut current_gap = patches[patch_index] >> patch_bit_width;
+    let mut current_gap = unsigned_shr_64(patches[patch_index], patch_bit_width);
     let mut current_patch = patches[patch_index] & patch_mask;
     let mut actual_gap = 0;
 
     while current_gap == 255 && current_patch == 0 {
         actual_gap += 255;
         patch_index += 1;
-        current_gap = patches[patch_index] >> patch_bit_width;
+        current_gap = unsigned_shr_64(patches[patch_index], patch_bit_width);
         current_patch = patches[patch_index] & patch_mask;
     }
     actual_gap += current_gap;
@@ -123,14 +123,14 @@ pub fn read_patched_base<N: NInt, R: Read, S: EncodingSign>(
             patch_index += 1;
 
             if patch_index < patches.len() {
-                current_gap = patches[patch_index] >> patch_bit_width;
+                current_gap = unsigned_shr_64(patches[patch_index], patch_bit_width);
                 current_patch = patches[patch_index] & patch_mask;
                 actual_gap = 0;
 
                 while current_gap == 255 && current_patch == 0 {
                     actual_gap += 255;
                     patch_index += 1;
-                    current_gap = patches[patch_index] >> patch_bit_width;
+                    current_gap = unsigned_shr_64(patches[patch_index], patch_bit_width);
                     current_patch = patches[patch_index] & patch_mask;
                 }
 
@@ -145,6 +145,12 @@ pub fn read_patched_base<N: NInt, R: Read, S: EncodingSign>(
     }
 
     Ok(())
+}
+
+fn unsigned_shr_64(x: i64, n: usize) -> i64 {
+    let unsigned_x = x as u64;
+    let shifted = unsigned_x >> n;
+    shifted as i64
 }
 
 fn derive_patches(
