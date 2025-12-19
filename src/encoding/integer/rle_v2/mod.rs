@@ -510,7 +510,7 @@ fn determine_variable_run_encoding<N: NInt, S: EncodingSign>(
     }
 
     // Aka 100th percentile
-    let base_reduced_literals_max_bit_width = max_data_value.closest_aligned_bit_width();
+    let base_reduced_literals_max_bit_width = max_data_value.bits_used();
     // 95th percentile width is used to find the 5% of values to encode with patches
     let base_reduced_literals_95th_percentile_bit_width =
         calculate_percentile_bits(&base_reduced_literals, 0.95);
@@ -535,6 +535,7 @@ mod tests {
 
     use std::io::Cursor;
 
+    use arrow::datatypes::ToByteSlice;
     use proptest::prelude::*;
 
     use crate::encoding::{
@@ -552,6 +553,35 @@ mod tests {
         let mut actual = vec![0; expected.len()];
         reader.decode(&mut actual).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn writer_test_patched_base() {
+        // Data extracted from ORC v2 Specification Draft
+        let mut literals = [
+            2030, 2000, 2020, 1000000, 2040, 2050, 2060, 2070, 2080, 2090, 2100, 2110, 2120, 2130,
+            2140, 2150, 2160, 2170, 2180, 2190,
+        ];
+        let expected = [
+            0x8e, 0x13, 0x2b, 0x21, 0x07, 0xd0, 0x1e, 0x00, 0x14, 0x70, 0x28, 0x32, 0x3c, 0x46,
+            0x50, 0x5a, 0x64, 0x6e, 0x78, 0x82, 0x8c, 0x96, 0xa0, 0xaa, 0xb4, 0xbe, 0xfc, 0xe8,
+        ];
+        let mut writer = RleV2Encoder::<i64, UnsignedEncoding>::new();
+        determine_variable_run_encoding::<i64, UnsignedEncoding>(&mut writer.data, &mut literals);
+        assert_eq!(writer.data.to_byte_slice(), expected);
+    }
+
+    #[test]
+    fn writer_test_choose_direct_over_patched_base() {
+        let mut literals = [0, 7, 6, 4, 5, 7, 0, 5, 6, 1, 4, 6, 5, 5, 3, 6, 7, 31, 17, 3];
+        let expected = [
+            // data manually derived from input with ORC v2 Specification Draft
+            // direct encoding, BW=8, L=20
+            0x4e, 0x13, 0, 7, 6, 4, 5, 7, 0, 5, 6, 1, 4, 6, 5, 5, 3, 6, 7, 31, 17, 3,
+        ];
+        let mut writer = RleV2Encoder::<i64, UnsignedEncoding>::new();
+        determine_variable_run_encoding::<i64, UnsignedEncoding>(&mut writer.data, &mut literals);
+        assert_eq!(writer.data.to_byte_slice(), expected);
     }
 
     #[test]
