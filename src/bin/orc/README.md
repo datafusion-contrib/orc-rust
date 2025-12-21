@@ -234,22 +234,3 @@ Stripe 0:
     Row group 1: 128 words, 8192 bits, might_contain("Alice") = false
     ...
 ```
-
-## Migration from Legacy Commands
-
-This unified `orc` tool replaces the following standalone commands:
-
-| Legacy Command | New Command |
-|---------------|-------------|
-| `orc-metadata file.orc` | `orc info file.orc` |
-| `orc-metadata -s file.orc` | `orc info --verbose file.orc` |
-| `orc-schema file.orc` | `orc info file.orc` |
-| `orc-schema -v file.orc` | `orc info --verbose file.orc` |
-| `orc-rowcount file.orc` | `orc info --row-count-only file.orc` |
-| `orc-export file.orc` | `orc export file.orc` |
-| `orc-read file.orc` | `orc export file.orc` |
-| `orc-read --json file.orc` | `orc export -f json file.orc` |
-| `orc-stats file.orc` | `orc stats file.orc` |
-| `orc-layout file.orc` | `orc layout file.orc` |
-| `orc-index file.orc col` | `orc index file.orc col` |
-
