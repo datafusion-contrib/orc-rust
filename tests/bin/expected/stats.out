@@ -1,0 +1,332 @@
+# Column stats
+File "tests/basic/data/test.orc" has 21 columns
+
+## Column 0
+* Num values: 5
+* Has nulls: false
+
+## Column 1
+* Data type Double
+* Minimum: 1
+* Maximum: 5
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 2
+* Data type Bucket
+* True count: 2
+* Num values: 4
+* Has nulls: true
+
+## Column 3
+* Data type String
+* Minimum: a
+* Maximum: ee
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 4
+* Data type String
+* Minimum: a
+* Maximum: ddd
+* Sum: 9
+* Num values: 4
+* Has nulls: true
+
+## Column 5
+* Data type String
+* Minimum: a
+* Maximum: ddd
+* Sum: 8
+* Num values: 4
+* Has nulls: true
+
+## Column 6
+* Data type String
+* Minimum: aaaaa
+* Maximum: ddddd
+* Sum: 20
+* Num values: 4
+* Has nulls: true
+
+## Column 7
+* Data type Integer
+* Minimum: 5
+* Maximum: 5
+* Sum: 20
+* Num values: 4
+* Has nulls: true
+
+## Column 8
+* Data type Integer
+* Minimum: -5
+* Maximum: -5
+* Sum: -20
+* Num values: 4
+* Has nulls: true
+
+## Column 9
+* Data type Integer
+* Minimum: 1
+* Maximum: 5
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 10
+* Data type Integer
+* Minimum: 1
+* Maximum: 5
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 11
+* Data type Integer
+* Minimum: 1
+* Maximum: 6
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 12
+* Data type Integer
+* Minimum: -6
+* Maximum: -1
+* Sum: -12
+* Num values: 4
+* Has nulls: true
+
+## Column 13
+* Data type Integer
+* Minimum: 1
+* Maximum: 6
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 14
+* Data type Integer
+* Minimum: -6
+* Maximum: -1
+* Sum: -12
+* Num values: 4
+* Has nulls: true
+
+## Column 15
+* Data type Integer
+* Minimum: -5
+* Maximum: 5
+* Sum: 11
+* Num values: 5
+* Has nulls: false
+
+## Column 16
+* Data type String
+* Minimum: a
+* Maximum: eeeee
+* Sum: 15
+* Num values: 5
+* Has nulls: false
+
+## Column 17
+* Data type String
+* Minimum: a
+* Maximum: eeeee
+* Sum: 15
+* Num values: 5
+* Has nulls: false
+
+## Column 18
+* Data type Timestamp
+* Minimum: 0
+* Maximum: 0
+* Minimum UTC: 2021-08-22 07:26:44.525
+* Maximum UTC: 2023-04-01 20:15:30.002
+* Num values: 5
+* Has nulls: false
+
+## Column 19
+* Data type Date
+* Minimum: 2023-01-01 00:00:00
+* Maximum: 2023-04-01 00:00:00
+* Num values: 5
+* Has nulls: false
+
+## Column 20
+* Data type Integer
+* Minimum: -127
+* Maximum: 127
+* Sum: 0
+* Num values: 4
+* Has nulls: true
+
+# Stripe stats
+File "tests/basic/data/test.orc" has 1 stripes
+
+----- Stripe 0 -----
+
+## Column 0
+* Num values: 5
+* Has nulls: false
+
+## Column 1
+* Data type Double
+* Minimum: 1
+* Maximum: 5
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 2
+* Data type Bucket
+* True count: 2
+* Num values: 4
+* Has nulls: true
+
+## Column 3
+* Data type String
+* Minimum: a
+* Maximum: ee
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 4
+* Data type String
+* Minimum: a
+* Maximum: ddd
+* Sum: 9
+* Num values: 4
+* Has nulls: true
+
+## Column 5
+* Data type String
+* Minimum: a
+* Maximum: ddd
+* Sum: 8
+* Num values: 4
+* Has nulls: true
+
+## Column 6
+* Data type String
+* Minimum: aaaaa
+* Maximum: ddddd
+* Sum: 20
+* Num values: 4
+* Has nulls: true
+
+## Column 7
+* Data type Integer
+* Minimum: 5
+* Maximum: 5
+* Sum: 20
+* Num values: 4
+* Has nulls: true
+
+## Column 8
+* Data type Integer
+* Minimum: -5
+* Maximum: -5
+* Sum: -20
+* Num values: 4
+* Has nulls: true
+
+## Column 9
+* Data type Integer
+* Minimum: 1
+* Maximum: 5
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 10
+* Data type Integer
+* Minimum: 1
+* Maximum: 5
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 11
+* Data type Integer
+* Minimum: 1
+* Maximum: 6
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 12
+* Data type Integer
+* Minimum: -6
+* Maximum: -1
+* Sum: -12
+* Num values: 4
+* Has nulls: true
+
+## Column 13
+* Data type Integer
+* Minimum: 1
+* Maximum: 6
+* Sum: 12
+* Num values: 4
+* Has nulls: true
+
+## Column 14
+* Data type Integer
+* Minimum: -6
+* Maximum: -1
+* Sum: -12
+* Num values: 4
+* Has nulls: true
+
+## Column 15
+* Data type Integer
+* Minimum: -5
+* Maximum: 5
+* Sum: 11
+* Num values: 5
+* Has nulls: false
+
+## Column 16
+* Data type String
+* Minimum: a
+* Maximum: eeeee
+* Sum: 15
+* Num values: 5
+* Has nulls: false
+
+## Column 17
+* Data type String
+* Minimum: a
+* Maximum: eeeee
+* Sum: 15
+* Num values: 5
+* Has nulls: false
+
+## Column 18
+* Data type Timestamp
+* Minimum: 0
+* Maximum: 0
+* Minimum UTC: 2021-08-22 07:26:44.525
+* Maximum UTC: 2023-04-01 20:15:30.002
+* Num values: 5
+* Has nulls: false
+
+## Column 19
+* Data type Date
+* Minimum: 2023-01-01 00:00:00
+* Maximum: 2023-04-01 00:00:00
+* Num values: 5
+* Has nulls: false
+
+## Column 20
+* Data type Integer
+* Minimum: -127
+* Maximum: 127
+* Sum: 0
+* Num values: 4
+* Has nulls: true
+

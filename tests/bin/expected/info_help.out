@@ -1,0 +1,11 @@
+Display file metadata, schema, and basic information
+
+Usage: orc info [OPTIONS] <FILES>...
+
+Arguments:
+  <FILES>...  Path(s) to the ORC file(s)
+
+Options:
+  -v, --verbose         Include stripe layout details (offsets, lengths, rows)
+      --row-count-only  Only display the row count for each file
+  -h, --help            Print help

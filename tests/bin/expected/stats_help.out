@@ -1,0 +1,9 @@
+Print column and stripe statistics
+
+Usage: orc stats <FILE>
+
+Arguments:
+  <FILE>  Path to the ORC file
+
+Options:
+  -h, --help  Print help

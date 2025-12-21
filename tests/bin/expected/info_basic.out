@@ -1,0 +1,29 @@
+File: tests/basic/data/test.orc
+Format version: 0.12
+Compression: None
+Row index stride: 10000
+Rows: 5
+Stripes: 1
+
+Schema:
+ROOT
+  a FLOAT
+  b BOOLEAN
+  str_direct STRING
+  d STRING
+  e STRING
+  f STRING
+  int_short_repeated INTEGER
+  int_neg_short_repeated INTEGER
+  int_delta INTEGER
+  int_neg_delta INTEGER
+  int_direct INTEGER
+  int_neg_direct INTEGER
+  bigint_direct LONG
+  bigint_neg_direct LONG
+  bigint_other LONG
+  utf8_increase STRING
+  utf8_decrease STRING
+  timestamp_simple TIMESTAMP
+  date_simple DATE
+  tinyint_simple BYTE
