@@ -97,33 +97,6 @@ path = "./benches/arrow_reader.rs"
 debug = true
 
 [[bin]]
-name = "orc-metadata"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-export"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-stats"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-read"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-schema"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-rowcount"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-index"
-required-features = ["cli"]
-
-[[bin]]
-name = "orc-layout"
+name = "orc"
+path = "src/bin/orc/main.rs"
 required-features = ["cli"]

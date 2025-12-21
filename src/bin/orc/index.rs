@@ -20,22 +20,20 @@
 //! Row indexes carry per-row-group statistics and positions; this tool surfaces
 //! them for debugging predicate pushdown and verifying writer-produced indexes.
 
-use std::{fs::File, path::PathBuf};
+use std::fs::File;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use orc_rust::reader::metadata::read_metadata;
 use orc_rust::schema::{DataType, RootDataType};
-use orc_rust::statistics::{ColumnStatistics, TypeStatistics};
 use orc_rust::stripe::Stripe;
 
+use crate::common::format_stats;
+
 #[derive(Debug, Parser)]
-#[command(
-    author,
-    version,
-    about = "Print row group index information for an ORC column"
-)]
-struct Args {
+#[command(about = "Print row group index information for an ORC column")]
+pub struct Args {
     /// Path to the ORC file
     file: PathBuf,
     /// Column name to inspect (top-level columns only)
@@ -49,59 +47,7 @@ fn find_column<'a>(root: &'a RootDataType, name: &str) -> Option<(usize, &'a Dat
         .map(|col| (col.data_type().column_index(), col.data_type(), col.name()))
 }
 
-fn fmt_stats(stats: &ColumnStatistics) -> String {
-    let mut parts = vec![format!("values={}", stats.number_of_values())];
-    if stats.has_null() {
-        parts.push("has_nulls=true".to_string());
-    }
-    if let Some(ts) = stats.type_statistics() {
-        match ts {
-            TypeStatistics::Integer { min, max, .. } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
-            }
-            TypeStatistics::Double { min, max, .. } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
-            }
-            TypeStatistics::String { min, max, .. } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
-            }
-            TypeStatistics::Bucket { true_count } => {
-                parts.push(format!("true_count={true_count}"));
-            }
-            TypeStatistics::Decimal { min, max, .. } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
-            }
-            TypeStatistics::Date { min, max } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
-            }
-            TypeStatistics::Binary { sum } => {
-                parts.push(format!("total_bytes={sum}"));
-            }
-            TypeStatistics::Timestamp { min, max, .. } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
-            }
-            TypeStatistics::Collection {
-                min_children,
-                max_children,
-                total_children,
-            } => {
-                parts.push(format!("min_children={min_children}"));
-                parts.push(format!("max_children={max_children}"));
-                parts.push(format!("total_children={total_children}"));
-            }
-        }
-    }
-    parts.join(", ")
-}
-
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: Args) -> Result<()> {
     let mut file = File::open(&args.file)
         .with_context(|| format!("failed to open {:?}", args.file.display()))?;
     let metadata = read_metadata(&mut file)?;
@@ -155,7 +101,7 @@ fn main() -> Result<()> {
             let end = (start + col_index.rows_per_group()).min(row_index.total_rows());
             print!("  Row group {row_group_idx} rows [{start},{end})");
             if let Some(stats) = &entry.statistics {
-                println!(" -> {}", fmt_stats(stats));
+                println!(" -> {}", format_stats(stats));
             } else {
                 println!(" -> no statistics");
             }

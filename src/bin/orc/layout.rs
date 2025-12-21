@@ -35,8 +35,8 @@ use prost::Message;
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Print ORC stripe and stream layout as JSON")]
-struct Args {
+#[command(about = "Print ORC stripe and stream layout as JSON")]
+pub struct Args {
     /// Path to the ORC file
     file: PathBuf,
 }
@@ -166,8 +166,7 @@ fn build_stripe_layout<R: ChunkReader>(
     })
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: Args) -> Result<()> {
     let mut file = File::open(&args.file)
         .with_context(|| format!("failed to open {:?}", args.file.display()))?;
     let metadata = read_metadata(&mut file)?;
