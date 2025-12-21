@@ -8,6 +8,7 @@ Commands:
   stats   Print column and stripe statistics
   layout  Print physical layout (stripes, streams, encodings) as JSON
   index   Print row group index information for a specific column
+  bloom   Inspect bloom filters in ORC files
   help    Print this message or the help of the given subcommand(s)
 
 Options:

@@ -51,7 +51,7 @@ pub mod arrow_reader;
 pub mod arrow_writer;
 #[cfg(feature = "async")]
 pub mod async_arrow_reader;
-mod bloom_filter;
+pub mod bloom_filter;
 mod column;
 pub mod compression;
 #[allow(dead_code)]

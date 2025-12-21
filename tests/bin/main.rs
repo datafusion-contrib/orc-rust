@@ -301,6 +301,55 @@ fn test_no_subcommand() {
 }
 
 // =============================================================================
+// Bloom Filter Subcommand Tests
+// =============================================================================
+
+#[test]
+fn test_bloom_help() {
+    let (ok, stdout, _) = run_orc(&["bloom", "--help"]);
+    assert!(ok, "orc bloom --help failed");
+    assert_output_matches(&stdout, "bloom_help.out");
+}
+
+#[test]
+fn test_bloom() {
+    let file = integration_data_rel("bloom_filter.orc");
+    let (ok, stdout, _) = run_orc(&["bloom", &file]);
+    assert!(ok, "orc bloom failed");
+    assert_output_matches(&stdout, "bloom.out");
+}
+
+#[test]
+fn test_bloom_with_test_value() {
+    let file = integration_data_rel("bloom_filter.orc");
+    let (ok, stdout, _) = run_orc(&["bloom", &file, "--column", "name", "--test", "Alice"]);
+    assert!(ok, "orc bloom with test value failed");
+    assert_output_matches(&stdout, "bloom_test.out");
+}
+
+#[test]
+fn test_bloom_no_filters() {
+    let file = basic_data_rel("test.orc");
+    let (ok, stdout, _) = run_orc(&["bloom", &file]);
+    assert!(ok, "orc bloom on file without filters failed");
+    assert!(
+        stdout.contains("No bloom filters found"),
+        "should indicate no bloom filters"
+    );
+}
+
+#[test]
+fn test_bloom_invalid_column() {
+    let file = integration_data_rel("bloom_filter.orc");
+    let (ok, _, stderr) = run_orc(&["bloom", &file, "--column", "nonexistent"]);
+    assert!(!ok, "orc bloom should fail for invalid column");
+    assert!(
+        stderr.contains("not found"),
+        "error should mention column not found"
+    );
+}
+
+// =============================================================================
 // Version Test
 // =============================================================================
 

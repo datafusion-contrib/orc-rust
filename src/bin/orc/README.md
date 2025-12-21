@@ -129,6 +129,31 @@ orc index file.orc column_name
 - Per-stripe row group details
 - Row group statistics (min, max, null count)
 
+### `bloom` - Inspect bloom filters
+
+Inspect bloom filters in ORC files. Bloom filters are probabilistic data structures that can quickly determine if a value is definitely NOT present in a row group, useful for predicate pushdown optimization.
+
+```bash
+# Show all columns with bloom filters
+orc bloom file.orc
+
+# Show bloom filter details for a specific column
+orc bloom file.orc --column name
+
+# Test if a value might exist in the bloom filter
+orc bloom file.orc --column name --test "Alice"
+```
+
+**Options:**
+- `-c, --column <NAME>` - Column name to inspect (show all if not specified)
+- `-t, --test <VALUE>` - Test if a value might be contained in the bloom filter
+
+**Output includes:**
+- List of columns with bloom filters
+- Number of row groups per column
+- Hash function count and bit count per filter
+- Test results showing if a value might be present (when `--test` is used)
+
 ## Examples
 
 ### Inspecting a file
@@ -194,6 +219,20 @@ Stripe 0: rows_per_group=10000 total_rows=100000
   Row group 0 rows [0,10000) -> values=10000, min=1, max=10000
   Row group 1 rows [10000,20000) -> values=10000, min=10001, max=20000
   ...
+
+# Check bloom filters and test a value
+$ orc bloom data.orc --column name --test "Alice"
+File: data.orc
+Stripes: 10
+
+Columns with Bloom Filters:
+  Column 2 (name): 100 row groups, 7 hash functions, 8192 bits/filter
+
+Stripe 0:
+  Column 2 (name):
+    Row group 0: 128 words, 8192 bits, might_contain("Alice") = true
+    Row group 1: 128 words, 8192 bits, might_contain("Alice") = false
+    ...
 ```
 
 ## Migration from Legacy Commands

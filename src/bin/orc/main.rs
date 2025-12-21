@@ -20,6 +20,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod bloom;
 mod common;
 mod export;
 mod index;
@@ -47,6 +48,8 @@ enum Commands {
     Layout(layout::Args),
     /// Print row group index information for a specific column
     Index(index::Args),
+    /// Inspect bloom filters in ORC files
+    Bloom(bloom::Args),
 }
 
 fn main() -> Result<()> {
@@ -58,5 +61,6 @@ fn main() -> Result<()> {
         Commands::Stats(args) => stats::run(args),
         Commands::Layout(args) => layout::run(args),
         Commands::Index(args) => index::run(args),
+        Commands::Bloom(args) => bloom::run(args),
     }
 }
