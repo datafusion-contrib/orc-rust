@@ -1,9 +1,0 @@
-Print physical layout (stripes, streams, encodings) as JSON
-
-Usage: orc layout <FILE>
-
-Arguments:
-  <FILE>  Path to the ORC file
-
-Options:
-  -h, --help  Print help

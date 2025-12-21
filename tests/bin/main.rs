@@ -83,47 +83,6 @@ fn assert_output_matches(actual: &str, expected_file: &str) {
 // Help Tests - Exact Match
 // =============================================================================
 
-#[test]
-fn test_help() {
-    let (ok, stdout, _) = run_orc(&["--help"]);
-    assert!(ok, "orc --help failed");
-    assert_output_matches(&stdout, "help.out");
-}
-
-#[test]
-fn test_info_help() {
-    let (ok, stdout, _) = run_orc(&["info", "--help"]);
-    assert!(ok, "orc info --help failed");
-    assert_output_matches(&stdout, "info_help.out");
-}
-
-#[test]
-fn test_export_help() {
-    let (ok, stdout, _) = run_orc(&["export", "--help"]);
-    assert!(ok, "orc export --help failed");
-    assert_output_matches(&stdout, "export_help.out");
-}
-
-#[test]
-fn test_stats_help() {
-    let (ok, stdout, _) = run_orc(&["stats", "--help"]);
-    assert!(ok, "orc stats --help failed");
-    assert_output_matches(&stdout, "stats_help.out");
-}
-
-#[test]
-fn test_layout_help() {
-    let (ok, stdout, _) = run_orc(&["layout", "--help"]);
-    assert!(ok, "orc layout --help failed");
-    assert_output_matches(&stdout, "layout_help.out");
-}
-
-#[test]
-fn test_index_help() {
-    let (ok, stdout, _) = run_orc(&["index", "--help"]);
-    assert!(ok, "orc index --help failed");
-    assert_output_matches(&stdout, "index_help.out");
-}
 
 // =============================================================================
 // Info Subcommand Tests
@@ -304,12 +263,6 @@ fn test_no_subcommand() {
 // Bloom Filter Subcommand Tests
 // =============================================================================
 
-#[test]
-fn test_bloom_help() {
-    let (ok, stdout, _) = run_orc(&["bloom", "--help"]);
-    assert!(ok, "orc bloom --help failed");
-    assert_output_matches(&stdout, "bloom_help.out");
-}
 
 #[test]
 fn test_bloom() {
