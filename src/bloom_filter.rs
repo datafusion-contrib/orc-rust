@@ -93,6 +93,26 @@ impl BloomFilter {
         }
     }
 
+    /// Set bits for the provided 64-bit hash using ORC's double-hash scheme.
+    pub fn add_hash(&mut self, hash64: u64) {
+        let bit_count = self.bitset.len() * 64;
+        if bit_count == 0 {
+            return;
+        }
+
+        let hash1 = hash64 as u32 as i32;
+        let hash2 = (hash64 >> 32) as u32 as i32;
+
+        for i in 1..=self.num_hash_functions {
+            let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
+            if combined < 0 {
+                combined = !combined;
+            }
+            let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
+            self.bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
+        }
+    }
+
     /// Returns true if the hash *might* be contained. False means *definitely not*.
     pub fn test_hash(&self, hash64: u64) -> bool {
         let bit_count = self.bitset.len() * 64;
@@ -226,24 +246,12 @@ mod tests {
     use super::*;
 
     fn build_filter(values: &[&[u8]], bitset_words: usize, hash_funcs: u32) -> BloomFilter {
-        let mut bitset = vec![0u64; bitset_words];
-        let bit_count = bitset_words * 64;
-
+        let mut filter = BloomFilter::from_parts(hash_funcs, vec![0u64; bitset_words]);
         for value in values {
             let hash64 = BloomFilter::hash_bytes(value);
-            let hash1 = hash64 as u32 as i32;
-            let hash2 = (hash64 >> 32) as u32 as i32;
-            for i in 1..=hash_funcs {
-                let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
-                if combined < 0 {
-                    combined = !combined;
-                }
-                let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
-                bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
-            }
+            filter.add_hash(hash64);
         }
-
-        BloomFilter::from_parts(hash_funcs, bitset)
+        filter
     }
 
     #[test]
@@ -278,22 +286,9 @@ mod tests {
         let value = 42i64;
         let hash64 = BloomFilter::hash_long(value);
 
-        let mut bitset = vec![0u64; 2];
-        let bit_count = bitset.len() * 64;
-        let hash1 = hash64 as u32 as i32;
-        let hash2 = (hash64 >> 32) as u32 as i32;
         let num_hash_functions = 3;
-
-        for i in 1..=num_hash_functions {
-            let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
-            if combined < 0 {
-                combined = !combined;
-            }
-            let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
-            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
-        }
-
-        let filter = BloomFilter::from_parts(num_hash_functions, bitset);
+        let mut filter = BloomFilter::from_parts(num_hash_functions, vec![0u64; 2]);
+        filter.add_hash(hash64);
         assert!(filter.test_hash(hash64));
         assert!(!filter.test_hash(BloomFilter::hash_long(value + 1)));
     }

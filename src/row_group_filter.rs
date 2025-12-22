@@ -537,28 +537,6 @@ mod tests {
     // Note: Tests are simplified as we can't directly construct RootDataType and NamedColumn
     // due to private fields. In real usage, these would come from parsing an ORC file.
 
-    fn build_bitset_for_hash(
-        hash64: u64,
-        bitset_words: usize,
-        num_hash_functions: u32,
-    ) -> Vec<u64> {
-        let mut bitset = vec![0u64; bitset_words];
-        let bit_count = bitset_words * 64;
-        let hash1 = hash64 as u32 as i32;
-        let hash2 = (hash64 >> 32) as u32 as i32;
-
-        for i in 1..=num_hash_functions {
-            let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
-            if combined < 0 {
-                combined = !combined;
-            }
-            let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
-            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
-        }
-
-        bitset
-    }
-
     fn create_test_row_index(rows_per_group: usize, total_rows: usize) -> StripeRowIndex {
         let mut columns = HashMap::new();
 
@@ -797,10 +775,9 @@ mod tests {
         use crate::predicate::{Predicate, PredicateValue};
 
         // Build a bloom filter that only contains the value 10
-        let hash = BloomFilter::hash_long(10);
         let num_hash_functions = 3;
-        let bitset = build_bitset_for_hash(hash, 2, num_hash_functions);
-        let bloom_filter = BloomFilter::from_parts(num_hash_functions, bitset);
+        let mut bloom_filter = BloomFilter::from_parts(num_hash_functions, vec![0u64; 2]);
+        bloom_filter.add_hash(BloomFilter::hash_long(10));
 
         // Attach bloom filter to a single row group
         let entry = RowGroupEntry::new(None, vec![]).with_bloom_filter(Some(bloom_filter));
@@ -822,10 +799,9 @@ mod tests {
         use crate::predicate::{Predicate, PredicateValue};
 
         // Build a bloom filter that claims value 50 may exist
-        let hash = BloomFilter::hash_long(50);
         let num_hash_functions = 3;
-        let bitset = build_bitset_for_hash(hash, 2, num_hash_functions);
-        let bloom_filter = BloomFilter::from_parts(num_hash_functions, bitset);
+        let mut bloom_filter = BloomFilter::from_parts(num_hash_functions, vec![0u64; 2]);
+        bloom_filter.add_hash(BloomFilter::hash_long(50));
 
         // Row group stats that make the predicate impossible (min/max do not cover 50)
         let stats = {
