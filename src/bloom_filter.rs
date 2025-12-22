@@ -134,16 +134,20 @@ impl BloomFilter {
     }
 
     pub(crate) fn hash_long(value: i64) -> u64 {
-        // Thomas Wang's 64-bit mix function.
-        let mut key = value as u64;
-        key = (!key).wrapping_add(key << 21);
+        // Thomas Wang's 64-bit mix function, matching Java's signed long operations.
+        let mut key = value;
+        key = (!key).wrapping_add(key.wrapping_shl(21));
         key ^= key >> 24;
-        key = key.wrapping_add(key << 3).wrapping_add(key << 8);
+        key = key
+            .wrapping_add(key.wrapping_shl(3))
+            .wrapping_add(key.wrapping_shl(8));
         key ^= key >> 14;
-        key = key.wrapping_add(key << 2).wrapping_add(key << 4);
+        key = key
+            .wrapping_add(key.wrapping_shl(2))
+            .wrapping_add(key.wrapping_shl(4));
         key ^= key >> 28;
-        key = key.wrapping_add(key << 31);
-        key
+        key = key.wrapping_add(key.wrapping_shl(31));
+        key as u64
     }
 }
 
