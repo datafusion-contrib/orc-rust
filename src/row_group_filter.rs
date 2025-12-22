@@ -20,8 +20,7 @@
 //! This module implements predicate evaluation against row group statistics
 //! to determine which row groups should be read or skipped.
 
-use std::borrow::Cow;
-
+use crate::bloom_filter::BloomFilter;
 use crate::error::{Result, UnexpectedSnafu};
 use crate::predicate::{ComparisonOp, Predicate, PredicateValue};
 use crate::row_index::RowGroupEntry;
@@ -346,24 +345,27 @@ fn row_group_might_match_bloom(
         None => return true,
     };
 
-    if let Some(bytes) = bloom_value_bytes(value) {
-        bloom_filter.might_contain(&bytes)
+    if let Some(hash) = bloom_value_hash64(value) {
+        bloom_filter.test_hash(hash)
     } else {
         debug!("Skipping bloom filter: unsupported predicate value type");
         true
     }
 }
 
-fn bloom_value_bytes(value: &PredicateValue) -> Option<Cow<'_, [u8]>> {
+fn bloom_value_hash64(value: &PredicateValue) -> Option<u64> {
     match value {
-        PredicateValue::Utf8(Some(v)) => Some(Cow::Borrowed(v.as_bytes())),
-        PredicateValue::Int8(Some(v)) => Some(Cow::Owned((*v as i64).to_le_bytes().to_vec())),
-        PredicateValue::Int16(Some(v)) => Some(Cow::Owned((*v as i64).to_le_bytes().to_vec())),
-        PredicateValue::Int32(Some(v)) => Some(Cow::Owned((*v as i64).to_le_bytes().to_vec())),
-        PredicateValue::Int64(Some(v)) => Some(Cow::Owned((*v).to_le_bytes().to_vec())),
-        PredicateValue::Float32(Some(v)) => Some(Cow::Owned(v.to_bits().to_le_bytes().to_vec())),
-        PredicateValue::Float64(Some(v)) => Some(Cow::Owned(v.to_bits().to_le_bytes().to_vec())),
-        PredicateValue::Boolean(Some(v)) => Some(Cow::Borrowed(if *v { &[1u8] } else { &[0u8] })),
+        PredicateValue::Utf8(Some(v)) => Some(BloomFilter::hash_bytes(v.as_bytes())),
+        PredicateValue::Int8(Some(v)) => Some(BloomFilter::hash_long(*v as i64)),
+        PredicateValue::Int16(Some(v)) => Some(BloomFilter::hash_long(*v as i64)),
+        PredicateValue::Int32(Some(v)) => Some(BloomFilter::hash_long(*v as i64)),
+        PredicateValue::Int64(Some(v)) => Some(BloomFilter::hash_long(*v)),
+        PredicateValue::Float32(Some(v)) => {
+            let as_double = *v as f64;
+            Some(BloomFilter::hash_long(as_double.to_bits() as i64))
+        }
+        PredicateValue::Float64(Some(v)) => Some(BloomFilter::hash_long(v.to_bits() as i64)),
+        PredicateValue::Boolean(Some(v)) => Some(BloomFilter::hash_long(if *v { 1 } else { 0 })),
         _ => None,
     }
 }
@@ -534,6 +536,28 @@ mod tests {
 
     // Note: Tests are simplified as we can't directly construct RootDataType and NamedColumn
     // due to private fields. In real usage, these would come from parsing an ORC file.
+
+    fn build_bitset_for_hash(
+        hash64: u64,
+        bitset_words: usize,
+        num_hash_functions: u32,
+    ) -> Vec<u64> {
+        let mut bitset = vec![0u64; bitset_words];
+        let bit_count = bitset_words * 64;
+        let hash1 = hash64 as u32 as i32;
+        let hash2 = (hash64 >> 32) as u32 as i32;
+
+        for i in 1..=num_hash_functions {
+            let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
+            if combined < 0 {
+                combined = !combined;
+            }
+            let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
+            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
+        }
+
+        bitset
+    }
 
     fn create_test_row_index(rows_per_group: usize, total_rows: usize) -> StripeRowIndex {
         let mut columns = HashMap::new();
@@ -773,21 +797,9 @@ mod tests {
         use crate::predicate::{Predicate, PredicateValue};
 
         // Build a bloom filter that only contains the value 10
-        let value = 10i64.to_le_bytes().to_vec();
-        let mut bitset = vec![0u64; 2];
-        let bit_count = bitset.len() * 64;
-        let hash = {
-            let mut cursor = std::io::Cursor::new(&value);
-            murmur3::murmur3_x64_128(&mut cursor, 0).unwrap()
-        };
-        let h1 = hash as u64;
-        let h2 = (hash >> 64) as u64;
+        let hash = BloomFilter::hash_long(10);
         let num_hash_functions = 3;
-        for i in 0..num_hash_functions {
-            let combined = h1.wrapping_add((i as u64).wrapping_mul(h2));
-            let bit_idx = (combined % (bit_count as u64)) as usize;
-            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
-        }
+        let bitset = build_bitset_for_hash(hash, 2, num_hash_functions);
         let bloom_filter = BloomFilter::from_parts(num_hash_functions, bitset);
 
         // Attach bloom filter to a single row group
@@ -810,21 +822,9 @@ mod tests {
         use crate::predicate::{Predicate, PredicateValue};
 
         // Build a bloom filter that claims value 50 may exist
-        let value = 50i64.to_le_bytes().to_vec();
-        let mut bitset = vec![0u64; 2];
-        let bit_count = bitset.len() * 64;
-        let hash = {
-            let mut cursor = std::io::Cursor::new(&value);
-            murmur3::murmur3_x64_128(&mut cursor, 0).unwrap()
-        };
-        let h1 = hash as u64;
-        let h2 = (hash >> 64) as u64;
+        let hash = BloomFilter::hash_long(50);
         let num_hash_functions = 3;
-        for i in 0..num_hash_functions {
-            let combined = h1.wrapping_add((i as u64).wrapping_mul(h2));
-            let bit_idx = (combined % (bit_count as u64)) as usize;
-            bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
-        }
+        let bitset = build_bitset_for_hash(hash, 2, num_hash_functions);
         let bloom_filter = BloomFilter::from_parts(num_hash_functions, bitset);
 
         // Row group stats that make the predicate impossible (min/max do not cover 50)
