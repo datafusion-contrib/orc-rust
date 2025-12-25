@@ -186,8 +186,8 @@ fn murmur3_64_orc(bytes: &[u8]) -> u64 {
 
     for i in 0..nblocks {
         let start = i * 8;
-        let k1 = u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap());
-        let mut k1 = k1.wrapping_mul(C1);
+        let mut k1 =
+            u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap()).wrapping_mul(C1);
         k1 = k1.rotate_left(R1);
         k1 = k1.wrapping_mul(C2);
 
