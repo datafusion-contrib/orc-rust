@@ -19,15 +19,14 @@
 //!
 //! This follows the ORC v1 spec (https://orc.apache.org/specification/ORCv1/):
 //! - Stream kinds `BLOOM_FILTER` / `BLOOM_FILTER_UTF8` provide per-row-group filters.
-//! - Bits are set using Murmur3 x64_128 with seed 0, deriving h1/h2 and the
-//!   double-hash sequence `h1 + i*h2 (mod m)` for `numHashFunctions`.
+//! - Values are hashed to a 64-bit base hash (ORC's Murmur3 hash64),
+//!   split into two 32-bit hashes, and combined with `hash1 + i*hash2`
+//!   for `numHashFunctions` (i starts at 1).
 //! - A cleared bit means the value is **definitely absent**; set bits mean
 //!   **possible presence** (false positives allowed).
 //!
 //! Bloom filters are attached to row groups and can quickly rule out equality
 //! predicates (e.g. `col = 'abc'`) before any data decoding.
-
-use murmur3::murmur3_x64_128;
 
 use crate::proto;
 
@@ -94,23 +93,54 @@ impl BloomFilter {
         }
     }
 
-    /// Returns true if the value *might* be contained. False means *definitely not*.
-    pub fn might_contain(&self, value: &[u8]) -> bool {
+    /// Set bits for the provided 64-bit hash using ORC's double-hash scheme.
+    pub fn add_hash(&mut self, hash64: u64) {
+        let bit_count = self.bitset.len() * 64;
+        if bit_count == 0 {
+            return;
+        }
+
+        let hash1 = hash64 as u32 as i32;
+        let hash2 = (hash64 >> 32) as u32 as i32;
+
+        for i in 1..=self.num_hash_functions {
+            let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
+            if combined < 0 {
+                combined = !combined;
+            }
+            let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
+            self.bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
+        }
+    }
+
+    /// Returns true if the hash *might* be contained. False means *definitely not*.
+    pub fn test_hash(&self, hash64: u64) -> bool {
         let bit_count = self.bitset.len() * 64;
         if bit_count == 0 {
             // Defensive: no bits means we cannot use the filter
             return true;
         }
 
-        let hash = self.hash128(value);
-        let h1 = hash as u64;
-        let h2 = (hash >> 64) as u64;
+        let hash1 = hash64 as u32 as i32;
+        let hash2 = (hash64 >> 32) as u32 as i32;
 
-        for i in 0..self.num_hash_functions {
-            // ORC uses the standard double-hash scheme: h1 + i*h2 (mod m)
-            let combined = h1.wrapping_add((i as u64).wrapping_mul(h2));
-            let bit_idx = (combined % (bit_count as u64)) as usize;
-            if !self.test_bit(bit_idx) {
+        // Mirror ORC Java BloomFilter.addHash/testHash:
+        // split 64-bit hash into two signed 32-bit ints, combine with i=1..k,
+        // flip negative results, then modulo by bit count.
+        for i in 1..=self.num_hash_functions {
+            let mut combined = hash1.wrapping_add((i as i32).wrapping_mul(hash2));
+            if combined < 0 {
+                combined = !combined;
+            }
+            let bit_idx = ((combined as u32 as u64) % (bit_count as u64)) as usize;
+            let word = bit_idx / 64;
+            let bit = bit_idx % 64;
+            let mask = 1u64 << bit;
+            if self
+                .bitset
+                .get(word)
+                .map_or(true, |bits| (bits & mask) == 0)
+            {
                 return false;
             }
         }
@@ -118,23 +148,97 @@ impl BloomFilter {
         true
     }
 
-    fn hash128(&self, value: &[u8]) -> u128 {
-        // The ORC specification uses Murmur3 (64-bit) for bloom filters.
-        // murmur3_x64_128 matches the Java reference implementation, where
-        // the lower 64 bits are treated as h1 and the upper 64 bits as h2.
-        let mut cursor = std::io::Cursor::new(value);
-        murmur3_x64_128(&mut cursor, 0).unwrap_or(0)
+    pub(crate) fn hash_bytes(value: &[u8]) -> u64 {
+        // ORC Java uses Murmur3.hash64 with a fixed seed (104729).
+        murmur3_64_orc(value)
     }
 
-    fn test_bit(&self, bit_idx: usize) -> bool {
-        let word = bit_idx / 64;
-        let bit = bit_idx % 64;
-        if let Some(bits) = self.bitset.get(word) {
-            (bits & (1u64 << bit)) != 0
-        } else {
-            false
-        }
+    pub(crate) fn hash_long(value: i64) -> u64 {
+        // Thomas Wang's 64-bit mix function, matching Java's signed long operations.
+        let mut key = value;
+        key = (!key).wrapping_add(key.wrapping_shl(21));
+        key ^= key >> 24;
+        key = key
+            .wrapping_add(key.wrapping_shl(3))
+            .wrapping_add(key.wrapping_shl(8));
+        key ^= key >> 14;
+        key = key
+            .wrapping_add(key.wrapping_shl(2))
+            .wrapping_add(key.wrapping_shl(4));
+        key ^= key >> 28;
+        key = key.wrapping_add(key.wrapping_shl(31));
+        key as u64
     }
+}
+
+/// ORC's Murmur3 hash64 implementation (seed = 104729), used for Bloom filters.
+fn murmur3_64_orc(bytes: &[u8]) -> u64 {
+    const C1: u64 = 0x87c3_7b91_1142_53d5;
+    const C2: u64 = 0x4cf5_ad43_2745_937f;
+    const R1: u32 = 31;
+    const R2: u32 = 27;
+    const M: u64 = 5;
+    const N1: u64 = 1_390_208_809;
+    const SEED: u64 = 104_729;
+
+    let mut h1 = SEED;
+    let nblocks = bytes.len() / 8;
+
+    for i in 0..nblocks {
+        let start = i * 8;
+        let mut k1 =
+            u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap()).wrapping_mul(C1);
+        k1 = k1.rotate_left(R1);
+        k1 = k1.wrapping_mul(C2);
+
+        h1 ^= k1;
+        h1 = h1.rotate_left(R2);
+        h1 = h1.wrapping_mul(M).wrapping_add(N1);
+    }
+
+    let mut k1 = 0u64;
+    let tail = &bytes[nblocks * 8..];
+    if tail.len() >= 7 {
+        k1 ^= (tail[6] as u64) << 48;
+    }
+    if tail.len() >= 6 {
+        k1 ^= (tail[5] as u64) << 40;
+    }
+    if tail.len() >= 5 {
+        k1 ^= (tail[4] as u64) << 32;
+    }
+    if tail.len() >= 4 {
+        k1 ^= (tail[3] as u64) << 24;
+    }
+    if tail.len() >= 3 {
+        k1 ^= (tail[2] as u64) << 16;
+    }
+    if tail.len() >= 2 {
+        k1 ^= (tail[1] as u64) << 8;
+    }
+    if !tail.is_empty() {
+        k1 ^= tail[0] as u64;
+    }
+
+    if !tail.is_empty() {
+        k1 = k1.wrapping_mul(C1);
+        k1 = k1.rotate_left(R1);
+        k1 = k1.wrapping_mul(C2);
+        h1 ^= k1;
+    }
+
+    h1 ^= bytes.len() as u64;
+    fmix64(h1)
+}
+
+/// Finalization mix function for Murmur3 64-bit.
+fn fmix64(mut k: u64) -> u64 {
+    k ^= k >> 33;
+    k = k.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    k ^= k >> 33;
+    k = k.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    k ^= k >> 33;
+    k
 }
 
 #[cfg(test)]
@@ -142,30 +246,22 @@ mod tests {
     use super::*;
 
     fn build_filter(values: &[&[u8]], bitset_words: usize, hash_funcs: u32) -> BloomFilter {
-        let mut bitset = vec![0u64; bitset_words];
-        let bit_count = bitset_words * 64;
-
+        let mut filter = BloomFilter::from_parts(hash_funcs, vec![0u64; bitset_words]);
         for value in values {
-            let mut cursor = std::io::Cursor::new(*value);
-            let hash = murmur3_x64_128(&mut cursor, 0).unwrap();
-            let h1 = hash as u64;
-            let h2 = (hash >> 64) as u64;
-            for i in 0..hash_funcs {
-                let combined = h1.wrapping_add((i as u64).wrapping_mul(h2));
-                let bit_idx = (combined % (bit_count as u64)) as usize;
-                bitset[bit_idx / 64] |= 1u64 << (bit_idx % 64);
-            }
+            let hash64 = BloomFilter::hash_bytes(value);
+            filter.add_hash(hash64);
         }
-
-        BloomFilter::from_parts(hash_funcs, bitset)
+        filter
     }
 
     #[test]
     fn test_bloom_filter_hit_and_miss() {
         let filter = build_filter(&[b"abc", b"def"], 2, 3);
 
-        assert!(filter.might_contain(b"abc"));
-        assert!(!filter.might_contain(b"xyz"));
+        let abc = BloomFilter::hash_bytes(b"abc");
+        let xyz = BloomFilter::hash_bytes(b"xyz");
+        assert!(filter.test_hash(abc));
+        assert!(!filter.test_hash(xyz));
     }
 
     #[test]
@@ -179,7 +275,21 @@ mod tests {
         };
 
         let decoded = BloomFilter::try_from_proto(&proto).unwrap();
-        assert!(decoded.might_contain(b"foo"));
-        assert!(!decoded.might_contain(b"bar"));
+        let foo = BloomFilter::hash_bytes(b"foo");
+        let bar = BloomFilter::hash_bytes(b"bar");
+        assert!(decoded.test_hash(foo));
+        assert!(!decoded.test_hash(bar));
+    }
+
+    #[test]
+    fn test_might_contain_hash64() {
+        let value = 42i64;
+        let hash64 = BloomFilter::hash_long(value);
+
+        let num_hash_functions = 3;
+        let mut filter = BloomFilter::from_parts(num_hash_functions, vec![0u64; 2]);
+        filter.add_hash(hash64);
+        assert!(filter.test_hash(hash64));
+        assert!(!filter.test_hash(BloomFilter::hash_long(value + 1)));
     }
 }

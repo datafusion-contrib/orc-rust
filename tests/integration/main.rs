@@ -371,108 +371,118 @@ fn bloom_filter() {
 }
 
 #[test]
-fn bloom_filter_predicate_prunes_non_matching() {
+fn bloom_filter_predicate_prunes() {
     let path = format!(
         "{}/tests/integration/data/bloom_filter.orc",
         env!("CARGO_MANIFEST_DIR"),
     );
     let file_path = Path::new(&path);
 
-    // Predicates target values absent from the file but inside min/max of the stripe,
-    // so statistics alone cannot prune; Bloom filters must be used.
-    let make_reader = |predicate: Predicate| {
+    // Count rows for a given predicate.
+    let count_rows = |predicate: Predicate| {
         let f = File::open(file_path).unwrap();
         ArrowReaderBuilder::try_new(f)
             .unwrap()
             .with_predicate(predicate)
             .build()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum::<usize>()
     };
 
-    // id=2 (between 1 and 3)
-    let rows_id = make_reader(Predicate::eq("id", PredicateValue::Int32(Some(2))))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-        .iter()
-        .map(|b| b.num_rows())
-        .sum::<usize>();
-    assert_eq!(rows_id, 0);
-
-    // name="beta" (between "alpha" and "gamma")
-    let rows_name = make_reader(Predicate::eq(
-        "name",
-        PredicateValue::Utf8(Some("beta".to_string())),
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap()
-    .iter()
-    .map(|b| b.num_rows())
-    .sum::<usize>();
-    assert_eq!(rows_name, 0);
-
-    // score=2.0 (between 1.0 and 3.0)
-    let rows_score = make_reader(Predicate::eq("score", PredicateValue::Float64(Some(2.0))))
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap()
-        .iter()
-        .map(|b| b.num_rows())
-        .sum::<usize>();
-    assert_eq!(rows_score, 0);
-
-    // event_date = 2023-01-02 (between 2023-01-01 and 2023-01-10)
-    let date = chrono::NaiveDate::from_ymd_opt(2023, 1, 2).unwrap();
-    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
-    let days = (date - epoch).num_days();
-    let rows_date = make_reader(Predicate::eq(
-        "event_date",
-        PredicateValue::Int32(Some(days as i32)),
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap()
-    .iter()
-    .map(|b| b.num_rows())
-    .sum::<usize>();
-    assert_eq!(rows_date, 0);
-
-    // flag=true/false absent combinations: combine with missing id to ensure pruning
-    let rows_flag_and_id = make_reader(Predicate::and(vec![
-        Predicate::eq("flag", PredicateValue::Boolean(Some(true))),
-        Predicate::eq("id", PredicateValue::Int32(Some(2))),
-    ]))
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap()
-    .iter()
-    .map(|b| b.num_rows())
-    .sum::<usize>();
-    assert_eq!(rows_flag_and_id, 0);
-
-    // binary predicate: look for a value not present but within min/max range (byte 0x02 between 0x01 and 0x0a)
-    let rows_binary = make_reader(Predicate::eq(
-        "data",
-        PredicateValue::Utf8(Some("\u{0002}".to_string())),
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap()
-    .iter()
-    .map(|b| b.num_rows())
-    .sum::<usize>();
-    assert_eq!(rows_binary, 0);
-
-    // decimal predicate: look for 2.22 (between 1.11 and 10.10)
-    let rows_decimal = make_reader(Predicate::eq(
-        "dec",
-        PredicateValue::Utf8(Some("2.22".to_string())),
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .unwrap()
-    .iter()
-    .map(|b| b.num_rows())
-    .sum::<usize>();
-    assert_eq!(rows_decimal, 0);
-
-    // Sanity: without predicate we should read all rows.
+    // Baseline: without predicate we should read all rows.
     let f_all = File::open(file_path).unwrap();
     let reader_all = ArrowReaderBuilder::try_new(f_all).unwrap().build();
     let all_batches = reader_all.collect::<Result<Vec<_>, _>>().unwrap();
     let total_rows: usize = all_batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(total_rows, 204);
+
+    // Predicates target values absent from the file but inside min/max of the stripe,
+    // so statistics alone cannot prune; Bloom filters must be used.
+
+    // id=2 (between 1 and 3)
+    let rows_id = count_rows(Predicate::eq("id", PredicateValue::Int32(Some(2))));
+    assert_eq!(rows_id, 0);
+
+    // id=3, should not be pruned
+    let rows_id_hit = count_rows(Predicate::eq("id", PredicateValue::Int32(Some(3))));
+    assert_eq!(rows_id_hit, 204);
+
+    // name="beta" (between "alpha" and "gamma")
+    let rows_name = count_rows(Predicate::eq(
+        "name",
+        PredicateValue::Utf8(Some("beta".to_string())),
+    ));
+    assert_eq!(rows_name, 0);
+
+    // name="alpha", should not be pruned
+    let rows_name_hit = count_rows(Predicate::eq(
+        "name",
+        PredicateValue::Utf8(Some("alpha".to_string())),
+    ));
+    assert_eq!(rows_name_hit, 204);
+
+    // score=2.0 (between 1.0 and 3.0)
+    let rows_score = count_rows(Predicate::eq("score", PredicateValue::Float64(Some(2.0))));
+    assert_eq!(rows_score, 0);
+
+    // score=1.0, should not be pruned
+    let rows_score_hit = count_rows(Predicate::eq("score", PredicateValue::Float64(Some(1.0))));
+    assert_eq!(rows_score_hit, 204);
+
+    // event_date = 2023-01-02 (between 2023-01-01 and 2023-01-10)
+    let date = chrono::NaiveDate::from_ymd_opt(2023, 1, 2).unwrap();
+    let epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+    let days = (date - epoch).num_days();
+    let rows_date = count_rows(Predicate::eq(
+        "event_date",
+        PredicateValue::Int32(Some(days as i32)),
+    ));
+    assert_eq!(rows_date, 0);
+
+    // event_date = 2023-01-01, should not be pruned
+    let date_hit = chrono::NaiveDate::from_ymd_opt(2023, 1, 1).unwrap();
+    let days_hit = (date_hit - epoch).num_days();
+    let rows_date_hit = count_rows(Predicate::eq(
+        "event_date",
+        PredicateValue::Int32(Some(days_hit as i32)),
+    ));
+    assert_eq!(rows_date_hit, 204);
+
+    // flag=true/false absent combinations: combine with missing id to ensure pruning
+    let rows_flag_and_id = count_rows(Predicate::and(vec![
+        Predicate::eq("flag", PredicateValue::Boolean(Some(true))),
+        Predicate::eq("id", PredicateValue::Int32(Some(2))),
+    ]));
+    assert_eq!(rows_flag_and_id, 0);
+
+    // binary predicate: look for a value not present but within min/max range (byte 0x02 between 0x01 and 0x0a)
+    let rows_binary = count_rows(Predicate::eq(
+        "data",
+        PredicateValue::Utf8(Some("\u{0002}".to_string())),
+    ));
+    assert_eq!(rows_binary, 0);
+
+    // binary predicate: look for a value present (byte 0x01)
+    let rows_binary_hit = count_rows(Predicate::eq(
+        "data",
+        PredicateValue::Utf8(Some("\u{0001}".to_string())),
+    ));
+    assert_eq!(rows_binary_hit, 204);
+
+    // decimal predicate: look for 2.22 (between 1.11 and 10.10)
+    let rows_decimal = count_rows(Predicate::eq(
+        "dec",
+        PredicateValue::Utf8(Some("2.22".to_string())),
+    ));
+    assert_eq!(rows_decimal, 0);
+
+    // decimal predicate: look for 1.11 (present)
+    let rows_decimal_hit = count_rows(Predicate::eq(
+        "dec",
+        PredicateValue::Utf8(Some("1.11".to_string())),
+    ));
+    assert_eq!(rows_decimal_hit, 204);
 }
