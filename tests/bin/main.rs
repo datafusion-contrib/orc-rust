@@ -159,6 +159,15 @@ fn test_export_with_batch_size() {
     assert_output_matches(&stdout, "export_json.out");
 }
 
+#[test]
+fn test_export_csv_columns_middle_two() {
+    let file = integration_data_rel("bloom_filter.orc");
+    let (ok, stdout, _) =
+        run_orc(&["export", "-f", "csv", "-c", "score,event_date", "-n", "1", &file]);
+    assert!(ok, "orc export -f csv -c score,event_date failed");
+    assert_output_matches(&stdout, "export_csv_columns_middle_two.out");
+}
+
 // =============================================================================
 // Stats Subcommand Tests
 // =============================================================================

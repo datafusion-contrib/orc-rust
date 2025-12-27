@@ -94,25 +94,28 @@ fn run_export<R: ChunkReader>(
         // Need to read metadata to build projection
         let metadata = read_metadata(&mut source)?;
 
+        let selected = args.columns.as_ref().unwrap();
         let cols: Vec<usize> = metadata
             .root_data_type()
             .children()
             .iter()
-            .enumerate()
-            .filter(|(_, nc)| {
-                // Filter out unsupported types for CSV/JSON export
+            .filter(|nc| {
+                // Check if column is selected
+                let is_selected = selected.iter().any(|c| nc.name().eq(c));
+                if !is_selected {
+                    return false;
+                }
+
+                // Filter out unsupported types for CSV/JSON export.
                 match nc.data_type().to_arrow_data_type() {
                     DataType::Binary => false,
                     DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => {
                         matches!(args.format, OutputFormat::Csv)
                     }
-                    _ => {
-                        let cols = args.columns.as_ref().unwrap();
-                        cols.iter().any(|c| nc.name().eq(c))
-                    }
+                    _ => true,
                 }
             })
-            .map(|(i, _)| i)
+            .map(|nc| nc.data_type().column_index())
             .collect();
 
         Some(ProjectionMask::roots(metadata.root_data_type(), cols))
