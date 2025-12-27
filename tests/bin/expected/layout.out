@@ -1,0 +1,539 @@
+{
+  "file": "tests/basic/data/test.orc",
+  "format_version": "0.12",
+  "compression": null,
+  "rows": 5,
+  "stripes": [
+    {
+      "index": 0,
+      "offset": 3,
+      "index_length": 550,
+      "data_length": 247,
+      "footer_length": 683,
+      "rows": 5,
+      "streams": [
+        {
+          "column": 0,
+          "kind": "ROW_INDEX",
+          "length": 13,
+          "offset": 3
+        },
+        {
+          "column": 1,
+          "kind": "ROW_INDEX",
+          "length": 43,
+          "offset": 16
+        },
+        {
+          "column": 2,
+          "kind": "ROW_INDEX",
+          "length": 21,
+          "offset": 59
+        },
+        {
+          "column": 3,
+          "kind": "ROW_INDEX",
+          "length": 27,
+          "offset": 80
+        },
+        {
+          "column": 4,
+          "kind": "ROW_INDEX",
+          "length": 28,
+          "offset": 107
+        },
+        {
+          "column": 5,
+          "kind": "ROW_INDEX",
+          "length": 28,
+          "offset": 135
+        },
+        {
+          "column": 6,
+          "kind": "ROW_INDEX",
+          "length": 34,
+          "offset": 163
+        },
+        {
+          "column": 7,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 197
+        },
+        {
+          "column": 8,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 220
+        },
+        {
+          "column": 9,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 243
+        },
+        {
+          "column": 10,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 266
+        },
+        {
+          "column": 11,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 289
+        },
+        {
+          "column": 12,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 312
+        },
+        {
+          "column": 13,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 335
+        },
+        {
+          "column": 14,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 358
+        },
+        {
+          "column": 15,
+          "kind": "ROW_INDEX",
+          "length": 23,
+          "offset": 381
+        },
+        {
+          "column": 16,
+          "kind": "ROW_INDEX",
+          "length": 30,
+          "offset": 404
+        },
+        {
+          "column": 17,
+          "kind": "ROW_INDEX",
+          "length": 30,
+          "offset": 434
+        },
+        {
+          "column": 18,
+          "kind": "ROW_INDEX",
+          "length": 39,
+          "offset": 464
+        },
+        {
+          "column": 19,
+          "kind": "ROW_INDEX",
+          "length": 25,
+          "offset": 503
+        },
+        {
+          "column": 20,
+          "kind": "ROW_INDEX",
+          "length": 25,
+          "offset": 528
+        },
+        {
+          "column": 0,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 553
+        },
+        {
+          "column": 1,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 555
+        },
+        {
+          "column": 1,
+          "kind": "DATA",
+          "length": 16,
+          "offset": 557
+        },
+        {
+          "column": 2,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 573
+        },
+        {
+          "column": 2,
+          "kind": "DATA",
+          "length": 2,
+          "offset": 575
+        },
+        {
+          "column": 3,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 577
+        },
+        {
+          "column": 3,
+          "kind": "LENGTH",
+          "length": 4,
+          "offset": 579
+        },
+        {
+          "column": 3,
+          "kind": "DATA",
+          "length": 12,
+          "offset": 583
+        },
+        {
+          "column": 4,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 595
+        },
+        {
+          "column": 4,
+          "kind": "LENGTH",
+          "length": 5,
+          "offset": 597
+        },
+        {
+          "column": 4,
+          "kind": "DATA",
+          "length": 9,
+          "offset": 602
+        },
+        {
+          "column": 5,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 611
+        },
+        {
+          "column": 5,
+          "kind": "LENGTH",
+          "length": 5,
+          "offset": 613
+        },
+        {
+          "column": 5,
+          "kind": "DATA",
+          "length": 8,
+          "offset": 618
+        },
+        {
+          "column": 6,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 626
+        },
+        {
+          "column": 6,
+          "kind": "LENGTH",
+          "length": 2,
+          "offset": 628
+        },
+        {
+          "column": 6,
+          "kind": "DATA",
+          "length": 20,
+          "offset": 630
+        },
+        {
+          "column": 7,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 650
+        },
+        {
+          "column": 7,
+          "kind": "DATA",
+          "length": 2,
+          "offset": 652
+        },
+        {
+          "column": 8,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 654
+        },
+        {
+          "column": 8,
+          "kind": "DATA",
+          "length": 2,
+          "offset": 656
+        },
+        {
+          "column": 9,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 658
+        },
+        {
+          "column": 9,
+          "kind": "DATA",
+          "length": 5,
+          "offset": 660
+        },
+        {
+          "column": 10,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 665
+        },
+        {
+          "column": 10,
+          "kind": "DATA",
+          "length": 5,
+          "offset": 667
+        },
+        {
+          "column": 11,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 672
+        },
+        {
+          "column": 11,
+          "kind": "DATA",
+          "length": 4,
+          "offset": 674
+        },
+        {
+          "column": 12,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 678
+        },
+        {
+          "column": 12,
+          "kind": "DATA",
+          "length": 4,
+          "offset": 680
+        },
+        {
+          "column": 13,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 684
+        },
+        {
+          "column": 13,
+          "kind": "DATA",
+          "length": 4,
+          "offset": 686
+        },
+        {
+          "column": 14,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 690
+        },
+        {
+          "column": 14,
+          "kind": "DATA",
+          "length": 4,
+          "offset": 692
+        },
+        {
+          "column": 15,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 696
+        },
+        {
+          "column": 15,
+          "kind": "DATA",
+          "length": 5,
+          "offset": 698
+        },
+        {
+          "column": 16,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 703
+        },
+        {
+          "column": 16,
+          "kind": "LENGTH",
+          "length": 4,
+          "offset": 705
+        },
+        {
+          "column": 16,
+          "kind": "DATA",
+          "length": 15,
+          "offset": 709
+        },
+        {
+          "column": 17,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 724
+        },
+        {
+          "column": 17,
+          "kind": "LENGTH",
+          "length": 4,
+          "offset": 726
+        },
+        {
+          "column": 17,
+          "kind": "DATA",
+          "length": 15,
+          "offset": 730
+        },
+        {
+          "column": 18,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 745
+        },
+        {
+          "column": 18,
+          "kind": "DATA",
+          "length": 22,
+          "offset": 747
+        },
+        {
+          "column": 18,
+          "kind": "SECONDARY",
+          "length": 10,
+          "offset": 769
+        },
+        {
+          "column": 19,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 779
+        },
+        {
+          "column": 19,
+          "kind": "DATA",
+          "length": 12,
+          "offset": 781
+        },
+        {
+          "column": 20,
+          "kind": "PRESENT",
+          "length": 2,
+          "offset": 793
+        },
+        {
+          "column": 20,
+          "kind": "DATA",
+          "length": 5,
+          "offset": 795
+        }
+      ],
+      "encodings": [
+        {
+          "column": 0,
+          "kind": "DIRECT",
+          "dictionary_size": 0
+        },
+        {
+          "column": 1,
+          "kind": "DIRECT",
+          "dictionary_size": 0
+        },
+        {
+          "column": 2,
+          "kind": "DIRECT",
+          "dictionary_size": 0
+        },
+        {
+          "column": 3,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 4,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 5,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 6,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 7,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 8,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 9,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 10,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 11,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 12,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 13,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 14,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 15,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 16,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 17,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 18,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 19,
+          "kind": "DIRECT_V2",
+          "dictionary_size": 0
+        },
+        {
+          "column": 20,
+          "kind": "DIRECT",
+          "dictionary_size": 0
+        }
+      ]
+    }
+  ]
+}

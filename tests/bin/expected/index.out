@@ -1,0 +1,8 @@
+File: tests/integration/data/TestOrcFile.testPredicatePushdown.orc | Column: int1 (index 1)
+Type: INTEGER
+Stripes: 1
+Stripe 0: rows_per_group=1000 total_rows=3500
+  Row group 0 rows [0,1000) -> values=1000, min=0, max=299700
+  Row group 1 rows [1000,2000) -> values=1000, min=300000, max=599700
+  Row group 2 rows [2000,3000) -> values=1000, min=600000, max=899700
+  Row group 3 rows [3000,3500) -> values=500, min=900000, max=1049700

@@ -1,0 +1,11 @@
+File: tests/integration/data/bloom_filter.orc
+Stripes: 1
+
+Columns with Bloom Filters:
+  Column 1 (id): 1 row groups, 7 hash functions, 95872 bits/filter
+  Column 2 (name): 1 row groups, 7 hash functions, 95872 bits/filter
+  Column 3 (score): 1 row groups, 7 hash functions, 95872 bits/filter
+  Column 4 (event_date): 1 row groups, 7 hash functions, 95872 bits/filter
+  Column 5 (flag): 1 row groups, 7 hash functions, 95872 bits/filter
+  Column 6 (data): 1 row groups, 7 hash functions, 95872 bits/filter
+  Column 7 (dec): 1 row groups, 7 hash functions, 95872 bits/filter
