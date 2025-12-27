@@ -95,9 +95,18 @@ fn run_export<R: ChunkReader>(
         let metadata = read_metadata(&mut source)?;
 
         let selected = args.columns.as_ref().unwrap();
-        let cols: Vec<usize> = metadata
-            .root_data_type()
-            .children()
+        let root_children = metadata.root_data_type().children();
+        let mut missing: Vec<&str> = selected
+            .iter()
+            .filter(|name| !root_children.iter().any(|c| c.name() == name.as_str()))
+            .map(|name| name.as_str())
+            .collect();
+        if !missing.is_empty() {
+            missing.sort();
+            anyhow::bail!("unknown column(s): {}", missing.join(", "));
+        }
+
+        let cols: Vec<usize> = root_children
             .iter()
             .filter(|nc| {
                 // Check if column is selected

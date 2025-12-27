@@ -162,10 +162,40 @@ fn test_export_with_batch_size() {
 #[test]
 fn test_export_csv_columns_middle_two() {
     let file = integration_data_rel("bloom_filter.orc");
-    let (ok, stdout, _) =
-        run_orc(&["export", "-f", "csv", "-c", "score,event_date", "-n", "1", &file]);
+    let (ok, stdout, _) = run_orc(&[
+        "export",
+        "-f",
+        "csv",
+        "-c",
+        "score,event_date",
+        "-n",
+        "1",
+        &file,
+    ]);
     assert!(ok, "orc export -f csv -c score,event_date failed");
     assert_output_matches(&stdout, "export_csv_columns_middle_two.out");
+}
+
+#[test]
+fn test_export_csv_column_not_existed() {
+    let file = integration_data_rel("bloom_filter.orc");
+    let (ok, _, stderr) = run_orc(&["export", "-f", "csv", "-c", "nonexistent", "-n", "1", &file]);
+    assert!(!ok, "orc export -f csv -c nonexistent should fail");
+    assert!(
+        stderr.contains("unknown column"),
+        "error should mention unknown column"
+    );
+}
+
+#[test]
+fn test_export_csv_columns_nested_unsupported() {
+    let file = integration_data_rel("bloom_filter.orc");
+    let (ok, _, stderr) = run_orc(&["export", "-f", "csv", "-c", "a.b.c", "-n", "1", &file]);
+    assert!(!ok, "orc export -f csv -c a.b.c should fail");
+    assert!(
+        stderr.contains("unknown column"),
+        "error should mention unknown column"
+    );
 }
 
 // =============================================================================
