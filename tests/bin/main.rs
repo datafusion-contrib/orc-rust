@@ -275,10 +275,6 @@ fn test_bloom_with_test_value() {
 }
 
 #[test]
-#[ignore] // Ignored due to bloom filter compatibility issues with pyorc-generated files
-          // This test documents the expected behavior: might_contain should return true
-          // for values that exist in the data. Once bloom filter compatibility is fixed,
-          // remove the #[ignore] attribute.
 fn test_bloom_might_contain_true() {
     // Test with a value that exists in the file ("alpha" is in the first row)
     // Expected: might_contain("alpha") = true

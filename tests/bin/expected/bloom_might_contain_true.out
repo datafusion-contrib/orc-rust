@@ -13,4 +13,3 @@ Columns with Bloom Filters:
 Stripe 0:
   Column 2 (name):
     Row group 0: 1498 words, 95872 bits, might_contain("alpha") = true
-

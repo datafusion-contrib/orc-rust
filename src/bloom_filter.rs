@@ -169,6 +169,26 @@ impl BloomFilter {
         key = key.wrapping_add(key.wrapping_shl(31));
         key as u64
     }
+
+    /// Returns the number of hash functions in use.
+    pub fn num_hash_functions(&self) -> u32 {
+        self.num_hash_functions
+    }
+
+    /// Returns the number of 64-bit words in the backing bitset.
+    pub fn word_count(&self) -> usize {
+        self.bitset.len()
+    }
+
+    /// Returns the number of bits in the backing bitset.
+    pub fn bit_count(&self) -> usize {
+        self.bitset.len() * 64
+    }
+
+    /// Returns true if the value might be contained (false means definitely not).
+    pub fn might_contain(&self, value: &[u8]) -> bool {
+        self.test_hash(Self::hash_bytes(value))
+    }
 }
 
 /// ORC's Murmur3 hash64 implementation (seed = 104729), used for Bloom filters.
