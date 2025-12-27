@@ -22,6 +22,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -49,9 +50,9 @@ pub struct Args {
     #[arg(value_enum, short, long, default_value_t = OutputFormat::Csv)]
     format: OutputFormat,
 
-    /// Export only the first N records (0 = all)
-    #[arg(short, long, value_name = "N", default_value_t = 0)]
-    num_rows: usize,
+    /// Export only the first N records (omit to export all)
+    #[arg(short, long, value_name = "N")]
+    num_rows: Option<NonZeroUsize>,
 
     /// Export only the specified columns (comma-separated list)
     #[arg(short, long, value_delimiter = ',')]
@@ -106,11 +107,8 @@ fn run_export<R: ChunkReader>(
                         matches!(args.format, OutputFormat::Csv)
                     }
                     _ => {
-                        if let Some(ref cols) = args.columns {
-                            cols.iter().any(|c| nc.name().eq(c))
-                        } else {
-                            true
-                        }
+                        let cols = args.columns.as_ref().unwrap();
+                        cols.iter().any(|c| nc.name().eq(c))
                     }
                 }
             })
@@ -138,11 +136,7 @@ fn run_export<R: ChunkReader>(
     };
 
     // Read and write data
-    let mut remaining = if args.num_rows == 0 {
-        usize::MAX
-    } else {
-        args.num_rows
-    };
+    let mut remaining = args.num_rows.map(NonZeroUsize::get).unwrap_or(usize::MAX);
 
     for batch in reader {
         if remaining == 0 {

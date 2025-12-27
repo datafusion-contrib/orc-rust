@@ -69,7 +69,7 @@ orc export --batch-size 4096 file.orc
 **Options:**
 - `-f, --format <FORMAT>` - Output format: `csv` (default) or `json`
 - `-o, --output <FILE>` - Output file (default: stdout)
-- `-n, --num-rows <N>` - Export only first N records (0 = all)
+- `-n, --num-rows <N>` - Export only first N records (omit to export all)
 - `-c, --columns <COLS>` - Comma-separated list of columns to export
 - `--batch-size <SIZE>` - Batch size for reading (default: 8192)
 
