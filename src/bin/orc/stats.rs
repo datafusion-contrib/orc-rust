@@ -15,18 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{fs::File, path::PathBuf, sync::Arc};
+//! Print column and stripe statistics from an ORC file.
 
-use anyhow::Result;
+use std::fs::File;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
 use arrow::temporal_conversions::{date32_to_datetime, timestamp_ms_to_datetime};
 use clap::Parser;
-use orc_rust::{reader::metadata::read_metadata, statistics::ColumnStatistics};
+use orc_rust::reader::metadata::read_metadata;
+use orc_rust::statistics::ColumnStatistics;
 
-#[derive(Parser)]
-#[command(name = "orc-stats")]
-#[command(version, about = "Print column and stripe stats from the orc file", long_about = None)]
-struct Cli {
-    /// Path to the orc file
+#[derive(Debug, Parser)]
+#[command(about = "Print column and stripe statistics from an ORC file")]
+pub struct Args {
+    /// Path to the ORC file
     file: PathBuf,
 }
 
@@ -112,16 +116,15 @@ fn print_column_stats(col_stats: &ColumnStatistics) {
     println!();
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-
-    let mut f = File::open(&cli.file)?;
-    let metadata = Arc::new(read_metadata(&mut f)?);
+pub fn run(args: Args) -> Result<()> {
+    let mut file = File::open(&args.file)
+        .with_context(|| format!("failed to open {:?}", args.file.display()))?;
+    let metadata = Arc::new(read_metadata(&mut file)?);
 
     println!("# Column stats");
     println!(
         "File {:?} has {} columns",
-        cli.file,
+        args.file,
         metadata.column_file_statistics().len()
     );
     println!();
@@ -133,7 +136,7 @@ fn main() -> Result<()> {
     println!("# Stripe stats");
     println!(
         "File {:?} has {} stripes",
-        cli.file,
+        args.file,
         metadata.stripe_metadatas().len()
     );
     println!();
