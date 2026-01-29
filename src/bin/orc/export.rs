@@ -90,11 +90,10 @@ fn run_export<R: ChunkReader>(
     output: Box<dyn io::Write>,
 ) -> Result<()> {
     // Build projection mask if columns are specified
-    let projection = if args.columns.is_some() {
+    let projection = if let Some(selected) = &args.columns {
         // Need to read metadata to build projection
         let metadata = read_metadata(&mut source)?;
 
-        let selected = args.columns.as_ref().unwrap();
         let root_children = metadata.root_data_type().children();
         let mut missing: Vec<&str> = selected
             .iter()

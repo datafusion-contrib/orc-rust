@@ -276,6 +276,26 @@ pub fn basic_test_bigint() {
 }
 
 #[test]
+pub fn basic_test_patched_int() {
+    let path = basic_path("patched_int.orc");
+    let reader = new_arrow_reader(&path, &["c1"]);
+    let batch = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+    let total_rows: usize = batch.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(999596, total_rows);
+
+    let last_batch_idx = batch.len() - 1;
+    let total_rows = batch[last_batch_idx].num_rows();
+    let last_3_rows = batch[last_batch_idx].slice(total_rows - 3, 3);
+
+    let expected = [
+        "+----+", "| c1 |", "+----+", "| 1  |", "| 1  |", "| 1  |", "+----+",
+    ];
+
+    assert_batches_eq(&[last_3_rows], &expected);
+}
+
+#[test]
 pub fn basic_test_nested_struct() {
     let path = basic_path("nested_struct.orc");
     let reader = new_arrow_reader_root(&path);
