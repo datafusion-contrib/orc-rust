@@ -106,46 +106,39 @@ fn evaluate_predicate_recursive(
                 result[i] = temp_results.iter().any(|tr| tr[i]);
             }
         }
-        Predicate::Not(predicate) => {
-            match &**predicate {
-                Predicate::Not(inner) => {
-                    evaluate_predicate_recursive(inner, row_index, schema, result)?;
-                }
-                Predicate::IsNull { column } => {
-                    evaluate_is_not_null(column, row_index, schema, result)?;
-                }
-                Predicate::IsNotNull { column } => {
-                    evaluate_is_null(column, row_index, schema, result)?;
-                }
-                Predicate::Comparison { column, op, value } => {
-                    evaluate_comparison(column, op.negate(), value, row_index, schema, result)?;
-                }
-                Predicate::And(predicates) => {
-                    let not_preds: Vec<Predicate> = predicates
-                        .iter()
-                        .map(|p| Predicate::Not(Box::new(p.clone())))
-                        .collect();
-                    evaluate_predicate_recursive(
-                        &Predicate::Or(not_preds),
-                        row_index,
-                        schema,
-                        result,
-                    )?;
-                }
-                Predicate::Or(predicates) => {
-                    let not_preds: Vec<Predicate> = predicates
-                        .iter()
-                        .map(|p| Predicate::Not(Box::new(p.clone())))
-                        .collect();
-                    evaluate_predicate_recursive(
-                        &Predicate::And(not_preds),
-                        row_index,
-                        schema,
-                        result,
-                    )?;
-                }
+        Predicate::Not(predicate) => match &**predicate {
+            Predicate::Not(inner) => {
+                evaluate_predicate_recursive(inner, row_index, schema, result)?;
             }
-        }
+            Predicate::IsNull { column } => {
+                evaluate_is_not_null(column, row_index, schema, result)?;
+            }
+            Predicate::IsNotNull { column } => {
+                evaluate_is_null(column, row_index, schema, result)?;
+            }
+            Predicate::Comparison { column, op, value } => {
+                evaluate_comparison(column, op.negate(), value, row_index, schema, result)?;
+            }
+            Predicate::And(predicates) => {
+                let not_preds: Vec<Predicate> = predicates
+                    .iter()
+                    .map(|p| Predicate::Not(Box::new(p.clone())))
+                    .collect();
+                evaluate_predicate_recursive(&Predicate::Or(not_preds), row_index, schema, result)?;
+            }
+            Predicate::Or(predicates) => {
+                let not_preds: Vec<Predicate> = predicates
+                    .iter()
+                    .map(|p| Predicate::Not(Box::new(p.clone())))
+                    .collect();
+                evaluate_predicate_recursive(
+                    &Predicate::And(not_preds),
+                    row_index,
+                    schema,
+                    result,
+                )?;
+            }
+        },
     }
 
     Ok(())
@@ -1053,24 +1046,22 @@ mod tests {
 
         // Create row index with mixed nulls and values
         let mut columns = HashMap::new();
-        let entries = vec![
-            RowGroupEntry::new(
-                Some({
-                    let proto_stats = proto::ColumnStatistics {
-                        number_of_values: Some(5000),
-                        has_null: Some(true),
-                        int_statistics: Some(proto::IntegerStatistics {
-                            minimum: Some(18),
-                            maximum: Some(25),
-                            sum: Some(107500),
-                        }),
-                        ..Default::default()
-                    };
-                    ColumnStatistics::try_from(&proto_stats).unwrap()
-                }),
-                vec![],
-            ),
-        ];
+        let entries = vec![RowGroupEntry::new(
+            Some({
+                let proto_stats = proto::ColumnStatistics {
+                    number_of_values: Some(5000),
+                    has_null: Some(true),
+                    int_statistics: Some(proto::IntegerStatistics {
+                        minimum: Some(18),
+                        maximum: Some(25),
+                        sum: Some(107500),
+                    }),
+                    ..Default::default()
+                };
+                ColumnStatistics::try_from(&proto_stats).unwrap()
+            }),
+            vec![],
+        )];
         columns.insert(1, RowGroupIndex::new(entries, 10000, 1));
         let row_index = StripeRowIndex::new(columns, 10000, 10000);
         let schema = create_test_schema();
