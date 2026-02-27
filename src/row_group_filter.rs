@@ -249,8 +249,21 @@ fn evaluate_comparison_with_stats(
         }
 
         // String comparisons
-        TypeStatistics::String { min, max, .. } => match value {
-            PredicateValue::Utf8(Some(v)) => evaluate_string_comparison(min, max, op, v),
+        TypeStatistics::String {
+            lower_bound,
+            upper_bound,
+            is_exact_min,
+            is_exact_max,
+            ..
+        } => match value {
+            PredicateValue::Utf8(Some(v)) => evaluate_string_comparison(
+                lower_bound,
+                upper_bound,
+                op,
+                v,
+                *is_exact_min,
+                *is_exact_max,
+            ),
             _ => {
                 return Err(UnexpectedSnafu {
                     msg: "Type mismatch: expected string value".to_string(),
@@ -295,7 +308,7 @@ fn evaluate_comparison_with_stats(
                 PredicateValue::Utf8(Some(v)) => {
                     // For decimal, we need to compare strings
                     // This is a simplified implementation
-                    evaluate_string_comparison(min, max, op, v)
+                    evaluate_string_comparison(min, max, op, v, true, true)
                 }
                 _ => {
                     return Err(UnexpectedSnafu {
@@ -461,31 +474,41 @@ fn evaluate_float_comparison(min: f64, max: f64, op: ComparisonOp, value: f64) -
     }
 }
 
-fn evaluate_string_comparison(min: &str, max: &str, op: ComparisonOp, value: &str) -> bool {
+fn evaluate_string_comparison(
+    lower_bound: &str,
+    upper_bound: &str,
+    op: ComparisonOp,
+    value: &str,
+    is_exact_min: bool,
+    is_exact_max: bool,
+) -> bool {
+    // Check if the column's minimum is <= value
+    let min_le_value = lower_bound < value || (lower_bound == value && is_exact_min);
+
+    // Check if the column's maximum is >= value
+    let max_ge_value = upper_bound > value || (upper_bound == value && is_exact_max);
+
     match op {
-        ComparisonOp::Equal => {
-            // col = value: keep if value is within [min, max] lexicographically
-            min <= value && value <= max
-        }
+        // Range intersection: The value must be reachable from both sides.
+        ComparisonOp::Equal => min_le_value && max_ge_value,
+
+        // One-sided inclusive checks reuse the logic above.
+        ComparisonOp::LessThanOrEqual => min_le_value,
+        ComparisonOp::GreaterThanOrEqual => max_ge_value,
+
+        // Strict checks are simple.
+        // Note: We don't need to check exactness here.
+        // e.g., for LessThan: if lower_bound == value, then actual_min >= value,
+        // so NO row can be strictly less than value.
+        ComparisonOp::LessThan => lower_bound < value,
+        ComparisonOp::GreaterThan => upper_bound > value,
+
+        // Special case: Only prune != if we are certain the column contains ONLY `value`.
         ComparisonOp::NotEqual => {
-            // col != value: keep if value is not the only value
-            !(min == value && max == value)
-        }
-        ComparisonOp::LessThan => {
-            // col < value: keep if min < value
-            min < value
-        }
-        ComparisonOp::LessThanOrEqual => {
-            // col <= value: keep if min <= value
-            min <= value
-        }
-        ComparisonOp::GreaterThan => {
-            // col > value: keep if max > value
-            max > value
-        }
-        ComparisonOp::GreaterThanOrEqual => {
-            // col >= value: keep if max >= value
-            max >= value
+            let is_single_value_col = lower_bound == upper_bound && is_exact_min && is_exact_max;
+
+            // Keep unless it's a single-value column exactly matching the target
+            !(is_single_value_col && lower_bound == value)
         }
     }
 }
@@ -1323,5 +1346,146 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert!(result[0]);
+    }
+
+    #[test]
+    fn test_evaluate_string_comparison() {
+        use crate::predicate::ComparisonOp;
+
+        // Helper to make the call shorter
+        let eval = |lower: &str,
+                    upper: &str,
+                    op: ComparisonOp,
+                    val: &str,
+                    exact_min: bool,
+                    exact_max: bool| {
+            super::evaluate_string_comparison(lower, upper, op, val, exact_min, exact_max)
+        };
+
+        // 1. EQUAL
+        // Range ["a", "c"], value "b" -> Keep
+        assert!(eval("a", "c", ComparisonOp::Equal, "b", true, true));
+        // Range ["a", "c"], value "d" -> Skip
+        assert!(!eval("a", "c", ComparisonOp::Equal, "d", true, true));
+        // Range ["a", "c"], value "a" -> Keep
+        assert!(eval("a", "c", ComparisonOp::Equal, "a", true, true));
+        // Range ["a", "c"], value "c" -> Keep
+        assert!(eval("a", "c", ComparisonOp::Equal, "c", true, true));
+
+        // Truncated stats (inexact)
+        // Range ["a", "c"] (min inexact), value "a" -> Skip (actual min > "a")
+        assert!(!eval("a", "c", ComparisonOp::Equal, "a", false, true));
+        // Range ["a", "c"] (max inexact), value "c" -> Skip (actual max < "c" max is rounded up)
+        assert!(!eval("a", "c", ComparisonOp::Equal, "c", true, false));
+
+        // 2. LESS THAN (< value)
+        // Range ["a", "c"], value "b". "a" < "b" -> Keep.
+        assert!(eval("a", "c", ComparisonOp::LessThan, "b", true, true));
+        // Range ["d", "e"], value "b". "d" >= "b" -> Skip.
+        assert!(!eval("d", "e", ComparisonOp::LessThan, "b", true, true));
+        // Range ["a", "c"], value "a". "a" < "a" is false.
+        // If exact, min="a", so no value < "a". Skip.
+        assert!(!eval("a", "c", ComparisonOp::LessThan, "a", true, true));
+        // If not exact, min="a" (truncated). Actual min >= "a".
+        // So actual min >= value. No value < "a". Skip.
+        assert!(!eval("a", "c", ComparisonOp::LessThan, "a", false, true));
+
+        // 3. GREATER THAN (> value)
+        // Range ["a", "c"], value "b". "c" > "b" -> Keep.
+        assert!(eval("a", "c", ComparisonOp::GreaterThan, "b", true, true));
+        // Range ["a", "b"], value "c". "b" <= "c" -> Skip.
+        assert!(!eval("a", "b", ComparisonOp::GreaterThan, "c", true, true));
+        // Range ["a", "c"], value "c". "c" > "c" is false.
+        // If exact, max="c", so no value > "c". Skip.
+        assert!(!eval("a", "c", ComparisonOp::GreaterThan, "c", true, true));
+        // If not exact, actual max < "c". Skip.
+        assert!(!eval("a", "c", ComparisonOp::GreaterThan, "c", true, false));
+
+        // 4. NOT EQUAL
+        // Range ["a", "c"], value "b". Keep.
+        assert!(eval("a", "c", ComparisonOp::NotEqual, "b", true, true));
+        // Range ["a", "a"], value "a".
+        // Exact: Skip.
+        assert!(!eval("a", "a", ComparisonOp::NotEqual, "a", true, true));
+
+        // 5. LESS THAN OR EQUAL (<= value)
+        // Range ["a", "c"], value "b". Keep.
+        assert!(eval(
+            "a",
+            "c",
+            ComparisonOp::LessThanOrEqual,
+            "b",
+            true,
+            true
+        ));
+        // Range ["a", "c"], value "a". Keep.
+        assert!(eval(
+            "a",
+            "c",
+            ComparisonOp::LessThanOrEqual,
+            "a",
+            true,
+            true
+        ));
+        // Range ["b", "c"], value "a". "b" > "a". Skip.
+        assert!(!eval(
+            "b",
+            "c",
+            ComparisonOp::LessThanOrEqual,
+            "a",
+            true,
+            true
+        ));
+        // Inexact min:
+        // Range ["a", "c"] (min inexact), value "a".
+        // Actual_min > "a". Skip.
+        assert!(!eval(
+            "a",
+            "c",
+            ComparisonOp::LessThanOrEqual,
+            "a",
+            false,
+            true
+        ));
+
+        // 6. GREATER THAN OR EQUAL (>= value)
+        // Range ["a", "c"], value "b". Keep.
+        assert!(eval(
+            "a",
+            "c",
+            ComparisonOp::GreaterThanOrEqual,
+            "b",
+            true,
+            true
+        ));
+        // Range ["a", "c"], value "c". Keep.
+        assert!(eval(
+            "a",
+            "c",
+            ComparisonOp::GreaterThanOrEqual,
+            "c",
+            true,
+            true
+        ));
+        // Range ["a", "b"], value "c". "b" < "c". Skip.
+        assert!(!eval(
+            "a",
+            "b",
+            ComparisonOp::GreaterThanOrEqual,
+            "c",
+            true,
+            true
+        ));
+        // Inexact max:
+        // Range ["a", "b"] (max inexact), value "b".
+        // Actual_max < "b". Skip.
+        assert!(!eval(
+            "a",
+            "b",
+            ComparisonOp::GreaterThanOrEqual,
+            "b",
+            true,
+            false
+        ));
     }
 }

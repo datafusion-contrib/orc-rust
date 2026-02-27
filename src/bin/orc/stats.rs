@@ -53,11 +53,19 @@ fn print_column_stats(col_stats: &ColumnStatistics) {
                     println!("* Sum: {sum}");
                 }
             }
-            orc_rust::statistics::TypeStatistics::String { min, max, sum } => {
+            orc_rust::statistics::TypeStatistics::String {
+                lower_bound,
+                upper_bound,
+                sum,
+                is_exact_min,
+                is_exact_max,
+            } => {
                 println!("* Data type String");
-                println!("* Minimum: {min}");
-                println!("* Maximum: {max}");
+                println!("* Minimum: {lower_bound}");
+                println!("* Maximum: {upper_bound}");
                 println!("* Sum: {sum}");
+                println!("* IsExactMin: {is_exact_min}");
+                println!("* IsExactMax: {is_exact_max}");
             }
             orc_rust::statistics::TypeStatistics::Bucket { true_count } => {
                 println!("* Data type Bucket");

@@ -24,6 +24,8 @@ File "tests/basic/data/test.orc" has 21 columns
 * Minimum: a
 * Maximum: ee
 * Sum: 12
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -32,6 +34,8 @@ File "tests/basic/data/test.orc" has 21 columns
 * Minimum: a
 * Maximum: ddd
 * Sum: 9
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -40,6 +44,8 @@ File "tests/basic/data/test.orc" has 21 columns
 * Minimum: a
 * Maximum: ddd
 * Sum: 8
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -48,6 +54,8 @@ File "tests/basic/data/test.orc" has 21 columns
 * Minimum: aaaaa
 * Maximum: ddddd
 * Sum: 20
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -128,6 +136,8 @@ File "tests/basic/data/test.orc" has 21 columns
 * Minimum: a
 * Maximum: eeeee
 * Sum: 15
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 5
 * Has nulls: false
 
@@ -136,6 +146,8 @@ File "tests/basic/data/test.orc" has 21 columns
 * Minimum: a
 * Maximum: eeeee
 * Sum: 15
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 5
 * Has nulls: false
 
@@ -191,6 +203,8 @@ File "tests/basic/data/test.orc" has 1 stripes
 * Minimum: a
 * Maximum: ee
 * Sum: 12
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -199,6 +213,8 @@ File "tests/basic/data/test.orc" has 1 stripes
 * Minimum: a
 * Maximum: ddd
 * Sum: 9
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -207,6 +223,8 @@ File "tests/basic/data/test.orc" has 1 stripes
 * Minimum: a
 * Maximum: ddd
 * Sum: 8
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -215,6 +233,8 @@ File "tests/basic/data/test.orc" has 1 stripes
 * Minimum: aaaaa
 * Maximum: ddddd
 * Sum: 20
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 4
 * Has nulls: true
 
@@ -295,6 +315,8 @@ File "tests/basic/data/test.orc" has 1 stripes
 * Minimum: a
 * Maximum: eeeee
 * Sum: 15
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 5
 * Has nulls: false
 
@@ -303,6 +325,8 @@ File "tests/basic/data/test.orc" has 1 stripes
 * Minimum: a
 * Maximum: eeeee
 * Sum: 15
+* IsExactMin: true
+* IsExactMax: true
 * Num values: 5
 * Has nulls: false
 
