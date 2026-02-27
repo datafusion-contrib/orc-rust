@@ -65,6 +65,20 @@ pub enum ComparisonOp {
     GreaterThanOrEqual,
 }
 
+impl ComparisonOp {
+    /// Returns the negated comparison operator.
+    pub fn negate(&self) -> Self {
+        match self {
+            ComparisonOp::Equal => ComparisonOp::NotEqual,
+            ComparisonOp::NotEqual => ComparisonOp::Equal,
+            ComparisonOp::LessThan => ComparisonOp::GreaterThanOrEqual,
+            ComparisonOp::LessThanOrEqual => ComparisonOp::GreaterThan,
+            ComparisonOp::GreaterThan => ComparisonOp::LessThanOrEqual,
+            ComparisonOp::GreaterThanOrEqual => ComparisonOp::LessThan,
+        }
+    }
+}
+
 /// A predicate that can be evaluated against row group statistics
 ///
 /// Predicates are simplified expressions used for filtering row groups before
