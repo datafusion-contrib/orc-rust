@@ -58,10 +58,14 @@ pub enum TypeStatistics {
         sum: Option<f64>,
     },
     String {
-        min: String,
-        max: String,
+        lower_bound: String,
+        upper_bound: String,
         /// Total length of all strings
         sum: i64,
+        /// If true, 'min' is an exact minimum. If false, it is a lower bound.
+        is_exact_min: bool,
+        /// If true, 'max' is an exact maximum. If false, it is an upper bound.
+        is_exact_max: bool,
     },
     /// For Boolean
     Bucket { true_count: u64 },
@@ -101,7 +105,9 @@ impl TryFrom<&proto::ColumnStatistics> for ColumnStatistics {
     type Error = error::OrcError;
 
     fn try_from(value: &proto::ColumnStatistics) -> Result<Self, Self::Error> {
-        let type_statistics = if let Some(stats) = &value.int_statistics {
+        let type_statistics = if value.number_of_values() == 0 {
+            None
+        } else if let Some(stats) = &value.int_statistics {
             Some(TypeStatistics::Integer {
                 min: stats.minimum(),
                 max: stats.maximum(),
@@ -114,10 +120,22 @@ impl TryFrom<&proto::ColumnStatistics> for ColumnStatistics {
                 sum: stats.sum,
             })
         } else if let Some(stats) = &value.string_statistics {
+            let (lower_bound, is_exact_min) = stats
+                .minimum
+                .as_deref()
+                .map(|s| (s, true))
+                .unwrap_or_else(|| (stats.lower_bound(), false));
+            let (upper_bound, is_exact_max) = stats
+                .maximum
+                .as_deref()
+                .map(|s| (s, true))
+                .unwrap_or_else(|| (stats.upper_bound(), false));
             Some(TypeStatistics::String {
-                min: stats.minimum().to_owned(),
-                max: stats.maximum().to_owned(),
+                lower_bound: lower_bound.to_owned(),
+                upper_bound: upper_bound.to_owned(),
                 sum: stats.sum(),
+                is_exact_min,
+                is_exact_max,
             })
         } else if let Some(stats) = &value.bucket_statistics {
             // TODO: false count?

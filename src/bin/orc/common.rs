@@ -86,9 +86,17 @@ pub fn format_stats(stats: &ColumnStatistics) -> String {
                 parts.push(format!("min={min}"));
                 parts.push(format!("max={max}"));
             }
-            TypeStatistics::String { min, max, .. } => {
-                parts.push(format!("min={min}"));
-                parts.push(format!("max={max}"));
+            TypeStatistics::String {
+                lower_bound,
+                upper_bound,
+                sum: _,
+                is_exact_min,
+                is_exact_max,
+            } => {
+                parts.push(format!("min={lower_bound}"));
+                parts.push(format!("max={upper_bound}"));
+                parts.push(format!("is_exact_min={is_exact_min}"));
+                parts.push(format!("is_exact_max={is_exact_max}"));
             }
             TypeStatistics::Bucket { true_count } => {
                 parts.push(format!("true_count={true_count}"));
