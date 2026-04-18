@@ -280,7 +280,7 @@ pub fn parse_stripe_row_indexes(
                 filters.len(),
                 column_id
             );
-            for (entry, bloom) in row_group_index.entries_mut().zip(filters.into_iter()) {
+            for (entry, bloom) in row_group_index.entries_mut().zip(filters) {
                 entry.bloom_filter = Some(bloom);
             }
         }

@@ -52,7 +52,7 @@
 
 use std::env;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -94,7 +94,7 @@ fn orc_tools_jar() -> Option<PathBuf> {
 }
 
 /// Run `java -jar <jar> meta <file>` and return stdout+stderr.
-fn run_meta(jar: &PathBuf, orc_path: &PathBuf) -> (bool, String, String) {
+fn run_meta(jar: &Path, orc_path: &Path) -> (bool, String, String) {
     let out = Command::new("java")
         .args([
             "-jar",
@@ -112,7 +112,7 @@ fn run_meta(jar: &PathBuf, orc_path: &PathBuf) -> (bool, String, String) {
 }
 
 /// Run `java -jar <jar> data <file>` and return stdout+stderr.
-fn run_data(jar: &PathBuf, orc_path: &PathBuf) -> (bool, String, String) {
+fn run_data(jar: &Path, orc_path: &Path) -> (bool, String, String) {
     let out = Command::new("java")
         .args([
             "-jar",
@@ -130,7 +130,7 @@ fn run_data(jar: &PathBuf, orc_path: &PathBuf) -> (bool, String, String) {
 }
 
 /// Write `batch` as an ORC file with `codec` to `path`.
-fn write_orc(path: &PathBuf, batch: &RecordBatch, codec: Compression) {
+fn write_orc(path: &Path, batch: &RecordBatch, codec: Compression) {
     let file = std::fs::File::create(path).expect("create orc tempfile");
     let mut writer = ArrowWriterBuilder::new(file, batch.schema())
         .with_compression(codec)
