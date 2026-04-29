@@ -165,6 +165,20 @@ pub enum OrcError {
         source: lz4_flex::block::DecompressError,
     },
 
+    #[snafu(display("Failed to encode snappy block: {}", source))]
+    SnappyEncode {
+        #[snafu(implicit)]
+        location: Location,
+        source: snap::Error,
+    },
+
+    #[snafu(display("Failed to encode zstd block: {}", source))]
+    ZstdEncode {
+        #[snafu(implicit)]
+        location: Location,
+        source: io::Error,
+    },
+
     #[snafu(display("Arrow error: {}", source))]
     Arrow {
         source: arrow::error::ArrowError,

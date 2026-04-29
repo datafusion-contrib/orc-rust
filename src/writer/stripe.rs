@@ -31,7 +31,21 @@ use super::column::{
     DoubleColumnEncoder, FloatColumnEncoder, Int16ColumnEncoder, Int32ColumnEncoder,
     Int64ColumnEncoder, LargeBinaryColumnEncoder, LargeStringColumnEncoder, StringColumnEncoder,
 };
+use super::compression::{compress_stream, Compression};
 use super::{ColumnEncoding, StreamType};
+
+/// Per-stripe configuration for the writer. Wraps the compression codec
+/// and per-chunk block size so [`StripeWriter`] can frame every emitted
+/// stream and the stripe footer per the ORC spec without each call site
+/// needing to know the spec details. `compression` here is always
+/// active — [`Compression::None`] is represented as `Option::None` at
+/// the `StripeWriter` level so the no-compression code path stays
+/// branchless.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct StripeCompression {
+    pub compression: Compression,
+    pub block_size: usize,
+}
 
 #[derive(Copy, Clone, Eq, Debug, PartialEq)]
 pub struct StripeInformation {
@@ -68,6 +82,11 @@ pub struct StripeWriter<W> {
     writer: W,
     /// Flattened columns, in order of their column ID.
     columns: Vec<Box<dyn ColumnStripeEncoder>>,
+    /// Optional compression applied to each emitted stream and to the
+    /// stripe footer per the ORC spec's chunked-frame format. `None`
+    /// means [`Compression::None`] and produces byte-identical output to
+    /// pre-compression-feature behaviour.
+    compression: Option<StripeCompression>,
     pub row_count: usize,
 }
 
@@ -80,11 +99,19 @@ impl<W> EstimateMemory for StripeWriter<W> {
 }
 
 impl<W: Write> StripeWriter<W> {
-    pub fn new(writer: W, schema: &SchemaRef) -> Self {
+    /// Construct a [`StripeWriter`] with optional ORC-spec compression
+    /// applied to each written stream and the stripe footer. Pass
+    /// `None` to retain the pre-feature byte-identical behaviour.
+    pub(crate) fn with_compression(
+        writer: W,
+        schema: &SchemaRef,
+        compression: Option<StripeCompression>,
+    ) -> Self {
         let columns = schema.fields().iter().map(create_encoder).collect();
         Self {
             writer,
             columns,
+            compression,
             row_count: 0,
         }
     }
@@ -126,11 +153,23 @@ impl<W: Write> StripeWriter<W> {
             // Offset by 1 to account for root of 0
             let column = index + 1;
             let streams = c.finish();
-            // Flush the streams to the writer
+            // Flush the streams to the writer.
             for s in streams {
                 let (kind, bytes) = s.into_parts();
-                let length = bytes.len();
-                self.writer.write_all(&bytes).context(IoSnafu)?;
+                // ORC compression wraps each stream's payload in
+                // `compression_block_size` chunks (default 256 KiB), each
+                // with a 3-byte header. The on-disk `length` recorded in
+                // the StripeFooter is the post-compression length so the
+                // reader knows how many bytes to consume per stream.
+                let bytes_to_write = match self.compression {
+                    Some(StripeCompression {
+                        compression,
+                        block_size,
+                    }) => compress_stream(compression, block_size, &bytes)?,
+                    None => bytes.to_vec(),
+                };
+                let length = bytes_to_write.len();
+                self.writer.write_all(&bytes_to_write).context(IoSnafu)?;
                 data_length += length as u64;
                 written_streams.push(WrittenStream {
                     kind,
@@ -147,7 +186,16 @@ impl<W: Write> StripeWriter<W> {
             encryption: vec![],
         };
 
-        let footer_bytes = stripe_footer.encode_to_vec();
+        // Per the ORC spec the stripe footer is also subject to the
+        // file's compression codec when one is configured.
+        let raw_footer = stripe_footer.encode_to_vec();
+        let footer_bytes = match self.compression {
+            Some(StripeCompression {
+                compression,
+                block_size,
+            }) => compress_stream(compression, block_size, &raw_footer)?,
+            None => raw_footer,
+        };
         let footer_length = footer_bytes.len() as u64;
         let row_count = self.row_count;
         self.writer.write_all(&footer_bytes).context(IoSnafu)?;

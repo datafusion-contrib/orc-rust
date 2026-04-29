@@ -93,6 +93,11 @@ required-features = ["async"]
 # Some issue when publishing and path isn't specified, so adding here
 path = "./benches/arrow_reader.rs"
 
+[[bench]]
+name = "writer_compression"
+harness = false
+path = "./benches/writer_compression.rs"
+
 [profile.bench]
 debug = true
 

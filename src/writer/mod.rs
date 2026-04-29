@@ -22,6 +22,7 @@ use bytes::Bytes;
 use crate::proto;
 
 pub mod column;
+pub mod compression;
 pub mod stripe;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
