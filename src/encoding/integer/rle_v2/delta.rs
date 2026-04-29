@@ -250,10 +250,8 @@ mod tests {
         .unwrap();
 
         let mut expected = vec![0, 10];
-        let mut i = 1;
-        for d in deltas {
-            expected.push(d + expected[i]);
-            i += 1;
+        for (i, d) in deltas.into_iter().enumerate() {
+            expected.push(d + expected[i + 1]);
         }
         assert_eq!(expected, out);
     }
@@ -279,10 +277,8 @@ mod tests {
         .unwrap();
 
         let mut expected = vec![10_000, 9_999];
-        let mut i = 1;
-        for d in deltas {
-            expected.push(expected[i] - d);
-            i += 1;
+        for (i, d) in deltas.into_iter().enumerate() {
+            expected.push(expected[i + 1] - d);
         }
         assert_eq!(expected, out);
     }
