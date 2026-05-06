@@ -19,9 +19,11 @@ use std::io::Write;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType as ArrowDataType, FieldRef, SchemaRef};
+use bytes::Bytes;
 use prost::Message;
 use snafu::ResultExt;
 
+use crate::compression::{compress_stream, WriterCompression};
 use crate::error::{IoSnafu, Result};
 use crate::memory::EstimateMemory;
 use crate::proto;
@@ -31,6 +33,7 @@ use super::column::{
     DoubleColumnEncoder, FloatColumnEncoder, Int16ColumnEncoder, Int32ColumnEncoder,
     Int64ColumnEncoder, LargeBinaryColumnEncoder, LargeStringColumnEncoder, StringColumnEncoder,
 };
+use super::index::RowIndexBuilder;
 use super::{ColumnEncoding, StreamType};
 
 #[derive(Copy, Clone, Eq, Debug, PartialEq)]
@@ -68,6 +71,9 @@ pub struct StripeWriter<W> {
     writer: W,
     /// Flattened columns, in order of their column ID.
     columns: Vec<Box<dyn ColumnStripeEncoder>>,
+    row_index_builders: Option<Vec<RowIndexBuilder>>,
+    compression: WriterCompression,
+    compression_block_size: usize,
     pub row_count: usize,
 }
 
@@ -80,11 +86,27 @@ impl<W> EstimateMemory for StripeWriter<W> {
 }
 
 impl<W: Write> StripeWriter<W> {
-    pub fn new(writer: W, schema: &SchemaRef) -> Self {
+    pub fn new(
+        writer: W,
+        schema: &SchemaRef,
+        compression: WriterCompression,
+        compression_block_size: usize,
+        row_index_stride: Option<usize>,
+    ) -> Self {
         let columns = schema.fields().iter().map(create_encoder).collect();
+        let row_index_builders = row_index_stride.map(|rows_per_group| {
+            schema
+                .fields()
+                .iter()
+                .map(|field| RowIndexBuilder::new(field.data_type().clone(), rows_per_group))
+                .collect()
+        });
         Self {
             writer,
             columns,
+            row_index_builders,
+            compression,
+            compression_block_size,
             row_count: 0,
         }
     }
@@ -93,6 +115,12 @@ impl<W: Write> StripeWriter<W> {
     /// to required batch size.
     pub fn encode_batch(&mut self, batch: &RecordBatch) -> Result<()> {
         // TODO: consider how to handle nested types (including parent nullability)
+        if let Some(row_index_builders) = self.row_index_builders.as_mut() {
+            for (array, row_index_builder) in batch.columns().iter().zip(row_index_builders) {
+                row_index_builder.update(array);
+            }
+        }
+
         for (array, encoder) in batch.columns().iter().zip(self.columns.iter_mut()) {
             encoder.encode_array(array)?;
         }
@@ -119,8 +147,33 @@ impl<W: Write> StripeWriter<W> {
         column_encodings.extend(child_column_encodings);
         let column_encodings = column_encodings.iter().map(From::from).collect();
 
-        // Root type won't have any streams
+        // Root type won't have any streams. Row index streams must be written before data streams.
         let mut written_streams = vec![];
+        let mut index_length = 0;
+        if let Some(row_index_builders) = self.row_index_builders.as_mut() {
+            for (index, row_index_builder) in row_index_builders.iter_mut().enumerate() {
+                let row_index = row_index_builder.finish();
+                if row_index.entry.is_empty() {
+                    continue;
+                }
+
+                let bytes = row_index.encode_to_vec();
+                let bytes = compress_stream(
+                    Bytes::from(bytes),
+                    self.compression,
+                    self.compression_block_size,
+                )?;
+                let length = bytes.len();
+                self.writer.write_all(&bytes).context(IoSnafu)?;
+                index_length += length as u64;
+                written_streams.push(WrittenStream {
+                    kind: StreamType::RowIndex,
+                    column: index + 1,
+                    length,
+                });
+            }
+        }
+
         let mut data_length = 0;
         for (index, c) in self.columns.iter_mut().enumerate() {
             // Offset by 1 to account for root of 0
@@ -129,6 +182,7 @@ impl<W: Write> StripeWriter<W> {
             // Flush the streams to the writer
             for s in streams {
                 let (kind, bytes) = s.into_parts();
+                let bytes = compress_stream(bytes, self.compression, self.compression_block_size)?;
                 let length = bytes.len();
                 self.writer.write_all(&bytes).context(IoSnafu)?;
                 data_length += length as u64;
@@ -148,6 +202,11 @@ impl<W: Write> StripeWriter<W> {
         };
 
         let footer_bytes = stripe_footer.encode_to_vec();
+        let footer_bytes = compress_stream(
+            Bytes::from(footer_bytes),
+            self.compression,
+            self.compression_block_size,
+        )?;
         let footer_length = footer_bytes.len() as u64;
         let row_count = self.row_count;
         self.writer.write_all(&footer_bytes).context(IoSnafu)?;
@@ -157,7 +216,7 @@ impl<W: Write> StripeWriter<W> {
 
         Ok(StripeInformation {
             start_offset,
-            index_length: 0,
+            index_length,
             data_length,
             footer_length,
             row_count,

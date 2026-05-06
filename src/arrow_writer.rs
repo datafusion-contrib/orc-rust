@@ -25,6 +25,7 @@ use prost::Message;
 use snafu::{ensure, ResultExt};
 
 use crate::{
+    compression::{compress_stream, WriterCompression, DEFAULT_COMPRESSION_BLOCK_SIZE},
     error::{IoSnafu, Result, UnexpectedSnafu},
     memory::EstimateMemory,
     proto,
@@ -38,6 +39,9 @@ pub struct ArrowWriterBuilder<W> {
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    compression: WriterCompression,
+    compression_block_size: usize,
+    row_index_stride: Option<usize>,
 }
 
 impl<W: Write> ArrowWriterBuilder<W> {
@@ -50,6 +54,9 @@ impl<W: Write> ArrowWriterBuilder<W> {
             batch_size: 1024,
             // 64 MiB
             stripe_byte_size: 64 * 1024 * 1024,
+            compression: WriterCompression::None,
+            compression_block_size: DEFAULT_COMPRESSION_BLOCK_SIZE as usize,
+            row_index_stride: None,
         }
     }
 
@@ -66,17 +73,66 @@ impl<W: Write> ArrowWriterBuilder<W> {
         self
     }
 
+    /// Compress ORC streams and metadata with the provided writer codec.
+    pub fn with_compression(mut self, compression: WriterCompression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Enable ORC `ZLIB` compression.
+    ///
+    /// ORC does not have a separate protobuf value for `GZIP`; common "gzip"
+    /// writer options map to ORC `ZLIB`, so this is a naming convenience.
+    pub fn with_gzip_compression(mut self) -> Self {
+        self.compression = WriterCompression::Zlib;
+        self
+    }
+
+    /// The maximum uncompressed size of each ORC compression block.
+    pub fn with_compression_block_size(mut self, compression_block_size: usize) -> Self {
+        self.compression_block_size = compression_block_size;
+        self
+    }
+
+    /// Enable writer row indexes with `rows_per_group` rows per row group.
+    pub fn with_row_index_stride(mut self, rows_per_group: usize) -> Self {
+        self.row_index_stride = Some(rows_per_group);
+        self
+    }
+
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
+        ensure!(
+            self.compression_block_size > 0,
+            UnexpectedSnafu {
+                msg: "compression block size must be greater than zero"
+            }
+        );
+        ensure!(
+            self.row_index_stride.map_or(true, |stride| stride > 0),
+            UnexpectedSnafu {
+                msg: "row index stride must be greater than zero"
+            }
+        );
+
         // Required magic "ORC" bytes at start of file
         self.writer.write_all(b"ORC").context(IoSnafu)?;
-        let writer = StripeWriter::new(self.writer, &self.schema);
+        let writer = StripeWriter::new(
+            self.writer,
+            &self.schema,
+            self.compression,
+            self.compression_block_size,
+            self.row_index_stride,
+        );
         Ok(ArrowWriter {
             writer,
             schema: self.schema,
             batch_size: self.batch_size,
             stripe_byte_size: self.stripe_byte_size,
+            compression: self.compression,
+            compression_block_size: self.compression_block_size,
+            row_index_stride: self.row_index_stride,
             written_stripes: vec![],
             // Accounting for the 3 magic bytes above
             total_bytes_written: 3,
@@ -92,6 +148,9 @@ pub struct ArrowWriter<W> {
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    compression: WriterCompression,
+    compression_block_size: usize,
+    row_index_stride: Option<usize>,
     written_stripes: Vec<StripeInformation>,
     /// Used to keep track of progress in file so far (instead of needing Seek on the writer)
     total_bytes_written: u64,
@@ -138,9 +197,18 @@ impl<W: Write> ArrowWriter<W> {
         if self.writer.row_count > 0 {
             self.flush_stripe()?;
         }
-        let footer = serialize_footer(&self.written_stripes, &self.schema);
+        let footer = serialize_footer(&self.written_stripes, &self.schema, self.row_index_stride);
         let footer = footer.encode_to_vec();
-        let postscript = serialize_postscript(footer.len() as u64);
+        let footer = compress_stream(
+            bytes::Bytes::from(footer),
+            self.compression,
+            self.compression_block_size,
+        )?;
+        let postscript = serialize_postscript(
+            footer.len() as u64,
+            self.compression,
+            self.compression_block_size,
+        );
         let postscript = postscript.encode_to_vec();
         let postscript_len = postscript.len() as u8;
 
@@ -221,7 +289,11 @@ fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
     types
 }
 
-fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto::Footer {
+fn serialize_footer(
+    stripes: &[StripeInformation],
+    schema: &SchemaRef,
+    row_index_stride: Option<usize>,
+) -> proto::Footer {
     let body_length = stripes
         .iter()
         .map(|s| s.index_length + s.data_length + s.footer_length)
@@ -237,7 +309,7 @@ fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto:
         metadata: vec![],
         number_of_rows: Some(number_of_rows),
         statistics: vec![],
-        row_index_stride: None,
+        row_index_stride: row_index_stride.map(|stride| stride as u32),
         writer: Some(u32::MAX),
         encryption: None,
         calendar: None,
@@ -245,11 +317,15 @@ fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto:
     }
 }
 
-fn serialize_postscript(footer_length: u64) -> proto::PostScript {
+fn serialize_postscript(
+    footer_length: u64,
+    compression: WriterCompression,
+    compression_block_size: usize,
+) -> proto::PostScript {
     proto::PostScript {
         footer_length: Some(footer_length),
-        compression: Some(proto::CompressionKind::None.into()), // TODO: support compression
-        compression_block_size: None,
+        compression: Some(compression.to_proto().into()),
+        compression_block_size: (!compression.is_none()).then_some(compression_block_size as u64),
         version: vec![0, 12],
         metadata_length: Some(0),       // TODO: statistics
         writer_version: Some(u32::MAX), // TODO: check which version to use
@@ -274,7 +350,7 @@ mod tests {
     };
     use bytes::Bytes;
 
-    use crate::{stripe::Stripe, ArrowReaderBuilder};
+    use crate::{statistics::TypeStatistics, stripe::Stripe, ArrowReaderBuilder};
 
     use super::*;
 
@@ -291,6 +367,25 @@ mod tests {
         let f = Bytes::from(f);
         let reader = ArrowReaderBuilder::try_new(f).unwrap().build();
         reader.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    fn write_to_bytes(
+        batch: &RecordBatch,
+        gzip_compression: bool,
+        row_index_stride: Option<usize>,
+    ) -> Bytes {
+        let mut f = vec![];
+        let mut builder = ArrowWriterBuilder::new(&mut f, batch.schema());
+        if gzip_compression {
+            builder = builder.with_gzip_compression();
+        }
+        if let Some(row_index_stride) = row_index_stride {
+            builder = builder.with_row_index_stride(row_index_stride);
+        }
+        let mut writer = builder.try_build().unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        Bytes::from(f)
     }
 
     #[test]
@@ -352,6 +447,55 @@ mod tests {
 
         let rows = roundtrip(std::slice::from_ref(&batch));
         assert_eq!(batch, rows[0]);
+    }
+
+    #[test]
+    fn test_roundtrip_write_gzip_compression() {
+        let array = Arc::new(Int64Array::from((0..1024).collect::<Vec<_>>()));
+        let schema = Schema::new(vec![Field::new("int64", ArrowDataType::Int64, false)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
+
+        let f = write_to_bytes(&batch, true, None);
+        let builder = ArrowReaderBuilder::try_new(f).unwrap();
+        assert!(builder.file_metadata().compression().is_some());
+
+        let rows = builder.build().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(batch, rows[0]);
+    }
+
+    #[test]
+    fn test_write_row_indexes() {
+        let array = Arc::new(Int64Array::from((0..12).collect::<Vec<_>>()));
+        let schema = Schema::new(vec![Field::new("int64", ArrowDataType::Int64, false)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
+
+        let mut f = write_to_bytes(&batch, false, Some(5));
+        let builder = ArrowReaderBuilder::try_new(f.clone()).unwrap();
+        assert_eq!(builder.file_metadata().row_index_stride(), Some(5));
+
+        let stripe = Stripe::new(
+            &mut f,
+            builder.file_metadata(),
+            builder.file_metadata().root_data_type(),
+            &builder.file_metadata().stripe_metadatas()[0],
+        )
+        .unwrap();
+        let row_index = stripe.read_row_indexes(builder.file_metadata()).unwrap();
+        let column_index = row_index.column(1).unwrap();
+
+        assert_eq!(column_index.num_row_groups(), 3);
+        assert_eq!(row_index.total_rows(), 12);
+        assert_eq!(row_index.rows_per_group(), 5);
+
+        let stats = column_index.row_group_stats(0).unwrap();
+        assert_eq!(stats.number_of_values(), 5);
+        assert!(!stats.has_null());
+        match stats.type_statistics().unwrap() {
+            TypeStatistics::Integer { min, max, sum } => {
+                assert_eq!((*min, *max, *sum), (0, 4, Some(10)));
+            }
+            other => panic!("expected integer stats, got {other:?}"),
+        }
     }
 
     #[test]
