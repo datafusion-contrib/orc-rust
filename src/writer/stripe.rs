@@ -30,19 +30,25 @@ use crate::proto;
 
 use super::column::{
     BinaryColumnEncoder, BooleanColumnEncoder, ByteColumnEncoder, ColumnStripeEncoder,
-    DoubleColumnEncoder, FloatColumnEncoder, Int16ColumnEncoder, Int32ColumnEncoder,
-    Int64ColumnEncoder, LargeBinaryColumnEncoder, LargeStringColumnEncoder, StringColumnEncoder,
+    DateColumnEncoder, DecimalColumnEncoder, DoubleColumnEncoder, FloatColumnEncoder,
+    Int16ColumnEncoder, Int32ColumnEncoder, Int64ColumnEncoder, LargeBinaryColumnEncoder,
+    LargeStringColumnEncoder, StringColumnEncoder, TimestampMicrosecondColumnEncoder,
+    TimestampMillisecondColumnEncoder, TimestampNanosecondColumnEncoder,
+    TimestampSecondColumnEncoder,
 };
-use super::index::RowIndexBuilder;
+use super::index::{
+    root_column_statistics, BloomFilterIndexBuilder, ColumnStatsBuilder, RowIndexBuilder,
+};
 use super::{ColumnEncoding, StreamType};
 
-#[derive(Copy, Clone, Eq, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StripeInformation {
     pub start_offset: u64,
     pub index_length: u64,
     pub data_length: u64,
     pub footer_length: u64,
     pub row_count: usize,
+    pub column_statistics: Vec<proto::ColumnStatistics>,
 }
 
 impl StripeInformation {
@@ -71,7 +77,10 @@ pub struct StripeWriter<W> {
     writer: W,
     /// Flattened columns, in order of their column ID.
     columns: Vec<Box<dyn ColumnStripeEncoder>>,
+    data_types: Vec<ArrowDataType>,
     row_index_builders: Option<Vec<RowIndexBuilder>>,
+    bloom_filter_builders: Option<Vec<BloomFilterIndexBuilder>>,
+    stripe_stats_builders: Vec<ColumnStatsBuilder>,
     compression: WriterCompression,
     compression_block_size: usize,
     pub row_count: usize,
@@ -92,8 +101,14 @@ impl<W: Write> StripeWriter<W> {
         compression: WriterCompression,
         compression_block_size: usize,
         row_index_stride: Option<usize>,
+        bloom_filters: bool,
     ) -> Self {
         let columns = schema.fields().iter().map(create_encoder).collect();
+        let data_types = schema
+            .fields()
+            .iter()
+            .map(|field| field.data_type().clone())
+            .collect::<Vec<_>>();
         let row_index_builders = row_index_stride.map(|rows_per_group| {
             schema
                 .fields()
@@ -101,10 +116,25 @@ impl<W: Write> StripeWriter<W> {
                 .map(|field| RowIndexBuilder::new(field.data_type().clone(), rows_per_group))
                 .collect()
         });
+        let bloom_filter_builders = row_index_stride.and_then(|rows_per_group| {
+            bloom_filters.then(|| {
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| {
+                        BloomFilterIndexBuilder::new(field.data_type().clone(), rows_per_group)
+                    })
+                    .collect()
+            })
+        });
+        let stripe_stats_builders = data_types.iter().map(ColumnStatsBuilder::new).collect();
         Self {
             writer,
             columns,
+            data_types,
             row_index_builders,
+            bloom_filter_builders,
+            stripe_stats_builders,
             compression,
             compression_block_size,
             row_count: 0,
@@ -119,6 +149,20 @@ impl<W: Write> StripeWriter<W> {
             for (array, row_index_builder) in batch.columns().iter().zip(row_index_builders) {
                 row_index_builder.update(array);
             }
+        }
+        if let Some(bloom_filter_builders) = self.bloom_filter_builders.as_mut() {
+            for (array, bloom_filter_builder) in batch.columns().iter().zip(bloom_filter_builders) {
+                bloom_filter_builder.update(array);
+            }
+        }
+
+        for ((array, data_type), stats_builder) in batch
+            .columns()
+            .iter()
+            .zip(self.data_types.iter())
+            .zip(self.stripe_stats_builders.iter_mut())
+        {
+            stats_builder.update_array(data_type, array);
         }
 
         for (array, encoder) in batch.columns().iter().zip(self.columns.iter_mut()) {
@@ -173,6 +217,29 @@ impl<W: Write> StripeWriter<W> {
                 });
             }
         }
+        if let Some(bloom_filter_builders) = self.bloom_filter_builders.as_mut() {
+            for (index, bloom_filter_builder) in bloom_filter_builders.iter_mut().enumerate() {
+                let bloom_filter_index = bloom_filter_builder.finish();
+                if bloom_filter_index.bloom_filter.is_empty() {
+                    continue;
+                }
+
+                let bytes = bloom_filter_index.encode_to_vec();
+                let bytes = compress_stream(
+                    Bytes::from(bytes),
+                    self.compression,
+                    self.compression_block_size,
+                )?;
+                let length = bytes.len();
+                self.writer.write_all(&bytes).context(IoSnafu)?;
+                index_length += length as u64;
+                written_streams.push(WrittenStream {
+                    kind: StreamType::BloomFilterUtf8,
+                    column: index + 1,
+                    length,
+                });
+            }
+        }
 
         let mut data_length = 0;
         for (index, c) in self.columns.iter_mut().enumerate() {
@@ -209,6 +276,7 @@ impl<W: Write> StripeWriter<W> {
         )?;
         let footer_length = footer_bytes.len() as u64;
         let row_count = self.row_count;
+        let column_statistics = self.finish_column_statistics(row_count as u64);
         self.writer.write_all(&footer_bytes).context(IoSnafu)?;
 
         // Reset state for next stripe
@@ -220,12 +288,30 @@ impl<W: Write> StripeWriter<W> {
             data_length,
             footer_length,
             row_count,
+            column_statistics,
         })
     }
 
     /// When finished writing all stripes, return the inner writer.
     pub fn finish(self) -> W {
         self.writer
+    }
+
+    fn finish_column_statistics(&mut self, row_count: u64) -> Vec<proto::ColumnStatistics> {
+        let mut column_statistics = Vec::with_capacity(self.stripe_stats_builders.len() + 1);
+        column_statistics.push(root_column_statistics(row_count));
+        column_statistics.extend(
+            self.data_types
+                .iter()
+                .zip(self.stripe_stats_builders.iter())
+                .map(|(data_type, builder)| builder.finish(data_type)),
+        );
+        self.stripe_stats_builders = self
+            .data_types
+            .iter()
+            .map(ColumnStatsBuilder::new)
+            .collect();
+        column_statistics
     }
 }
 
@@ -242,6 +328,20 @@ fn create_encoder(field: &FieldRef) -> Box<dyn ColumnStripeEncoder> {
         ArrowDataType::Binary => Box::new(BinaryColumnEncoder::new()),
         ArrowDataType::LargeBinary => Box::new(LargeBinaryColumnEncoder::new()),
         ArrowDataType::Boolean => Box::new(BooleanColumnEncoder::new()),
+        ArrowDataType::Decimal128(_, scale) => Box::new(DecimalColumnEncoder::new(*scale)),
+        ArrowDataType::Date32 => Box::new(DateColumnEncoder::new(ColumnEncoding::DirectV2)),
+        ArrowDataType::Timestamp(arrow::datatypes::TimeUnit::Second, _) => {
+            Box::new(TimestampSecondColumnEncoder::new())
+        }
+        ArrowDataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => {
+            Box::new(TimestampMillisecondColumnEncoder::new())
+        }
+        ArrowDataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
+            Box::new(TimestampMicrosecondColumnEncoder::new())
+        }
+        ArrowDataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, _) => {
+            Box::new(TimestampNanosecondColumnEncoder::new())
+        }
         // TODO: support more datatypes
         _ => unimplemented!("unsupported datatype"),
     }

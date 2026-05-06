@@ -41,7 +41,7 @@ pub mod rle_v2;
 mod util;
 
 // TODO: consider having a separate varint.rs
-pub use util::read_varint_zigzagged;
+pub use util::{read_varint_zigzagged, write_varint_zigzagged};
 
 #[derive(Debug, Clone, Copy)]
 pub enum RleVersion {
