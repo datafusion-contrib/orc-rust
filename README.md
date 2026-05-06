@@ -12,9 +12,9 @@ See the [documentation](https://docs.rs/orc-rust/latest/orc_rust/) for examples 
 
 ## Supported features
 
-This crate currently only supports reading ORC files into Arrow arrays. Write support is planned
-(see [Roadmap](#roadmap)). The below features listed relate only to reading ORC files.
-At this time, we aim to support the [ORCv1](https://orc.apache.org/specification/ORCv1/) specification only.
+This crate supports reading ORC files into Arrow arrays and writing flat Arrow
+`RecordBatch`es to ORC files. At this time, we aim to support the
+[ORCv1](https://orc.apache.org/specification/ORCv1/) specification only.
 
 - Read synchronously & asynchronously (using Tokio)
 - All compression types (Zlib, Snappy, Lzo, Lz4, Zstd)
@@ -22,6 +22,8 @@ At this time, we aim to support the [ORCv1](https://orc.apache.org/specification
 - All encodings
 - Rudimentary support for retrieving statistics
 - Retrieving user metadata into Arrow schema metadata
+- Write Arrow arrays synchronously, with an async writer API for async sinks
+- Writer compression, row group indexes, bloom filters, and column statistics
 
 ## Roadmap
 
@@ -32,9 +34,8 @@ The following lists the rough roadmap for features to be implemented, from highe
 
 - Performance enhancements
 - Predicate pushdown
-- Row indices
-- Bloom filters
-- Write from Arrow arrays
+- Complete row index seek positions
+- Nested type write support
 - Encryption
 
 A non-Arrow API interface is not planned at the moment. Feel free to raise an issue if there is such
@@ -120,4 +121,3 @@ To regenerate/update the [proto.rs](src/proto.rs) file, execute the [regen.sh](r
 ```shell
 ./regen.sh
 ```
-

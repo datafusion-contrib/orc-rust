@@ -84,12 +84,24 @@ impl BloomFilter {
         })
     }
 
-    #[cfg(test)]
     /// Create a Bloom filter from raw parts (mainly for tests)
-    pub fn from_parts(num_hash_functions: u32, bitset: Vec<u64>) -> Self {
+    pub(crate) fn from_parts(num_hash_functions: u32, bitset: Vec<u64>) -> Self {
         Self {
             num_hash_functions: num_hash_functions.max(1),
             bitset,
+        }
+    }
+
+    pub(crate) fn to_proto_utf8(&self) -> proto::BloomFilter {
+        let utf8bitset = self
+            .bitset
+            .iter()
+            .flat_map(|word| word.to_le_bytes())
+            .collect();
+        proto::BloomFilter {
+            num_hash_functions: Some(self.num_hash_functions),
+            bitset: vec![],
+            utf8bitset: Some(utf8bitset),
         }
     }
 

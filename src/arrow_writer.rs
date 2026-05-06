@@ -25,9 +25,11 @@ use prost::Message;
 use snafu::{ensure, ResultExt};
 
 use crate::{
+    compression::{compress_stream, WriterCompression, DEFAULT_COMPRESSION_BLOCK_SIZE},
     error::{IoSnafu, Result, UnexpectedSnafu},
     memory::EstimateMemory,
     proto,
+    writer::index::{root_column_statistics, ColumnStatsBuilder},
     writer::stripe::{StripeInformation, StripeWriter},
 };
 
@@ -38,6 +40,10 @@ pub struct ArrowWriterBuilder<W> {
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    compression: WriterCompression,
+    compression_block_size: usize,
+    row_index_stride: Option<usize>,
+    bloom_filters: bool,
 }
 
 impl<W: Write> ArrowWriterBuilder<W> {
@@ -50,6 +56,10 @@ impl<W: Write> ArrowWriterBuilder<W> {
             batch_size: 1024,
             // 64 MiB
             stripe_byte_size: 64 * 1024 * 1024,
+            compression: WriterCompression::None,
+            compression_block_size: DEFAULT_COMPRESSION_BLOCK_SIZE as usize,
+            row_index_stride: None,
+            bloom_filters: false,
         }
     }
 
@@ -66,17 +76,83 @@ impl<W: Write> ArrowWriterBuilder<W> {
         self
     }
 
+    /// Compress ORC streams and metadata with the provided writer codec.
+    pub fn with_compression(mut self, compression: WriterCompression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Enable ORC `ZLIB` compression.
+    ///
+    /// ORC does not have a separate protobuf value for `GZIP`; common "gzip"
+    /// writer options map to ORC `ZLIB`, so this is a naming convenience.
+    pub fn with_gzip_compression(mut self) -> Self {
+        self.compression = WriterCompression::Zlib;
+        self
+    }
+
+    /// The maximum uncompressed size of each ORC compression block.
+    pub fn with_compression_block_size(mut self, compression_block_size: usize) -> Self {
+        self.compression_block_size = compression_block_size;
+        self
+    }
+
+    /// Enable writer row indexes with `rows_per_group` rows per row group.
+    pub fn with_row_index_stride(mut self, rows_per_group: usize) -> Self {
+        self.row_index_stride = Some(rows_per_group);
+        self
+    }
+
+    /// Enable writer bloom filter streams for supported primitive columns.
+    pub fn with_bloom_filters(mut self) -> Self {
+        self.bloom_filters = true;
+        self
+    }
+
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
+        ensure!(
+            self.compression_block_size > 0,
+            UnexpectedSnafu {
+                msg: "compression block size must be greater than zero"
+            }
+        );
+        ensure!(
+            self.row_index_stride.map_or(true, |stride| stride > 0),
+            UnexpectedSnafu {
+                msg: "row index stride must be greater than zero"
+            }
+        );
+        ensure!(
+            !self.bloom_filters || self.row_index_stride.is_some(),
+            UnexpectedSnafu {
+                msg: "bloom filters require row indexes to define row group boundaries"
+            }
+        );
+        serialize_schema(&self.schema)?;
+
         // Required magic "ORC" bytes at start of file
         self.writer.write_all(b"ORC").context(IoSnafu)?;
-        let writer = StripeWriter::new(self.writer, &self.schema);
+        let writer = StripeWriter::new(
+            self.writer,
+            &self.schema,
+            self.compression,
+            self.compression_block_size,
+            self.row_index_stride,
+            self.bloom_filters,
+        );
+        let file_stats_builders = schema_field_stats_builders(&self.schema);
         Ok(ArrowWriter {
             writer,
             schema: self.schema,
             batch_size: self.batch_size,
             stripe_byte_size: self.stripe_byte_size,
+            compression: self.compression,
+            compression_block_size: self.compression_block_size,
+            row_index_stride: self.row_index_stride,
+            file_stats_builders,
+            total_rows_written: 0,
             written_stripes: vec![],
             // Accounting for the 3 magic bytes above
             total_bytes_written: 3,
@@ -92,6 +168,11 @@ pub struct ArrowWriter<W> {
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    compression: WriterCompression,
+    compression_block_size: usize,
+    row_index_stride: Option<usize>,
+    file_stats_builders: Vec<ColumnStatsBuilder>,
+    total_rows_written: u64,
     written_stripes: Vec<StripeInformation>,
     /// Used to keep track of progress in file so far (instead of needing Seek on the writer)
     total_bytes_written: u64,
@@ -107,6 +188,16 @@ impl<W: Write> ArrowWriter<W> {
                 msg: "RecordBatch doesn't match expected schema"
             }
         );
+
+        self.total_rows_written += batch.num_rows() as u64;
+        for ((array, field), stats_builder) in batch
+            .columns()
+            .iter()
+            .zip(self.schema.fields().iter())
+            .zip(self.file_stats_builders.iter_mut())
+        {
+            stats_builder.update_array(field.data_type(), array);
+        }
 
         for offset in (0..batch.num_rows()).step_by(self.batch_size) {
             let length = self.batch_size.min(batch.num_rows() - offset);
@@ -133,29 +224,81 @@ impl<W: Write> ArrowWriter<W> {
 
     /// Flush the current stripe if it is still in progress, and write the tail
     /// metadata and close the writer.
-    pub fn close(mut self) -> Result<()> {
+    pub fn close(self) -> Result<()> {
+        self.finish().map(|_| ())
+    }
+
+    /// Flush buffered data, write file tail metadata, and return the inner writer.
+    pub fn finish(mut self) -> Result<W> {
         // Flush in-progress stripe
         if self.writer.row_count > 0 {
             self.flush_stripe()?;
         }
-        let footer = serialize_footer(&self.written_stripes, &self.schema);
+
+        let metadata = serialize_metadata(&self.written_stripes);
+        let metadata = metadata.encode_to_vec();
+        let metadata = compress_stream(
+            bytes::Bytes::from(metadata),
+            self.compression,
+            self.compression_block_size,
+        )?;
+        let metadata_length = metadata.len() as u64;
+
+        let file_statistics = self.file_column_statistics();
+        let footer = serialize_footer(
+            &self.written_stripes,
+            &self.schema,
+            self.row_index_stride,
+            file_statistics,
+        )?;
         let footer = footer.encode_to_vec();
-        let postscript = serialize_postscript(footer.len() as u64);
+        let footer = compress_stream(
+            bytes::Bytes::from(footer),
+            self.compression,
+            self.compression_block_size,
+        )?;
+        let postscript = serialize_postscript(
+            footer.len() as u64,
+            metadata_length,
+            self.compression,
+            self.compression_block_size,
+        );
         let postscript = postscript.encode_to_vec();
         let postscript_len = postscript.len() as u8;
 
         let mut writer = self.writer.finish();
+        writer.write_all(&metadata).context(IoSnafu)?;
         writer.write_all(&footer).context(IoSnafu)?;
         writer.write_all(&postscript).context(IoSnafu)?;
         // Postscript length as last byte
         writer.write_all(&[postscript_len]).context(IoSnafu)?;
 
-        // TODO: return file metadata
-        Ok(())
+        Ok(writer)
+    }
+
+    fn file_column_statistics(&self) -> Vec<proto::ColumnStatistics> {
+        let mut statistics = Vec::with_capacity(self.file_stats_builders.len() + 1);
+        statistics.push(root_column_statistics(self.total_rows_written));
+        statistics.extend(
+            self.schema
+                .fields()
+                .iter()
+                .zip(self.file_stats_builders.iter())
+                .map(|(field, builder)| builder.finish(field.data_type())),
+        );
+        statistics
     }
 }
 
-fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
+fn schema_field_stats_builders(schema: &SchemaRef) -> Vec<ColumnStatsBuilder> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| ColumnStatsBuilder::new(field.data_type()))
+        .collect()
+}
+
+fn serialize_schema(schema: &SchemaRef) -> Result<Vec<proto::Type>> {
     let mut types = vec![];
 
     let field_names = schema
@@ -213,45 +356,101 @@ fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
                 kind: Some(proto::r#type::Kind::Boolean.into()),
                 ..Default::default()
             },
+            ArrowDataType::Decimal128(precision, scale) => {
+                ensure!(
+                    *scale >= 0,
+                    UnexpectedSnafu {
+                        msg: "negative decimal scales are not supported by the ORC writer"
+                    }
+                );
+                proto::Type {
+                    kind: Some(proto::r#type::Kind::Decimal.into()),
+                    precision: Some(*precision as u32),
+                    scale: Some(*scale as u32),
+                    ..Default::default()
+                }
+            }
+            ArrowDataType::Date32 => proto::Type {
+                kind: Some(proto::r#type::Kind::Date.into()),
+                ..Default::default()
+            },
+            ArrowDataType::Timestamp(_, None) => proto::Type {
+                kind: Some(proto::r#type::Kind::Timestamp.into()),
+                ..Default::default()
+            },
+            ArrowDataType::Timestamp(_, Some(tz)) if tz.as_ref() == "UTC" => proto::Type {
+                kind: Some(proto::r#type::Kind::TimestampInstant.into()),
+                ..Default::default()
+            },
+            ArrowDataType::Timestamp(_, Some(_)) => {
+                ensure!(
+                    false,
+                    UnexpectedSnafu {
+                        msg: "only UTC timestamp timezones are supported by the ORC writer"
+                    }
+                );
+                unreachable!()
+            }
             // TODO: support more types
             _ => unimplemented!("unsupported datatype"),
         };
         types.push(t);
     }
-    types
+    Ok(types)
 }
 
-fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto::Footer {
+fn serialize_footer(
+    stripes: &[StripeInformation],
+    schema: &SchemaRef,
+    row_index_stride: Option<usize>,
+    statistics: Vec<proto::ColumnStatistics>,
+) -> Result<proto::Footer> {
     let body_length = stripes
         .iter()
         .map(|s| s.index_length + s.data_length + s.footer_length)
         .sum::<u64>();
     let number_of_rows = stripes.iter().map(|s| s.row_count as u64).sum::<u64>();
     let stripes = stripes.iter().map(From::from).collect();
-    let types = serialize_schema(schema);
-    proto::Footer {
+    let types = serialize_schema(schema)?;
+    Ok(proto::Footer {
         header_length: Some(3),
         content_length: Some(body_length + 3),
         stripes,
         types,
         metadata: vec![],
         number_of_rows: Some(number_of_rows),
-        statistics: vec![],
-        row_index_stride: None,
+        statistics,
+        row_index_stride: row_index_stride.map(|stride| stride as u32),
         writer: Some(u32::MAX),
         encryption: None,
         calendar: None,
         software_version: None,
+    })
+}
+
+fn serialize_metadata(stripes: &[StripeInformation]) -> proto::Metadata {
+    proto::Metadata {
+        stripe_stats: stripes
+            .iter()
+            .map(|stripe| proto::StripeStatistics {
+                col_stats: stripe.column_statistics.clone(),
+            })
+            .collect(),
     }
 }
 
-fn serialize_postscript(footer_length: u64) -> proto::PostScript {
+fn serialize_postscript(
+    footer_length: u64,
+    metadata_length: u64,
+    compression: WriterCompression,
+    compression_block_size: usize,
+) -> proto::PostScript {
     proto::PostScript {
         footer_length: Some(footer_length),
-        compression: Some(proto::CompressionKind::None.into()), // TODO: support compression
-        compression_block_size: None,
+        compression: Some(compression.to_proto().into()),
+        compression_block_size: (!compression.is_none()).then_some(compression_block_size as u64),
         version: vec![0, 12],
-        metadata_length: Some(0),       // TODO: statistics
+        metadata_length: Some(metadata_length),
         writer_version: Some(u32::MAX), // TODO: check which version to use
         stripe_statistics_length: None,
         magic: Some("ORC".to_string()),
@@ -264,17 +463,17 @@ mod tests {
 
     use arrow::{
         array::{
-            Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-            Int64Array, Int8Array, LargeBinaryArray, LargeStringArray, RecordBatchReader,
-            StringArray,
+            Array, BinaryArray, BooleanArray, Date32Array, Decimal128Array, Float32Array,
+            Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, LargeBinaryArray,
+            LargeStringArray, RecordBatchReader, StringArray, TimestampNanosecondArray,
         },
         buffer::NullBuffer,
         compute::concat_batches,
-        datatypes::{DataType as ArrowDataType, Field, Schema},
+        datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
     };
     use bytes::Bytes;
 
-    use crate::{stripe::Stripe, ArrowReaderBuilder};
+    use crate::{statistics::TypeStatistics, stripe::Stripe, ArrowReaderBuilder};
 
     use super::*;
 
@@ -291,6 +490,29 @@ mod tests {
         let f = Bytes::from(f);
         let reader = ArrowReaderBuilder::try_new(f).unwrap().build();
         reader.collect::<Result<Vec<_>, _>>().unwrap()
+    }
+
+    fn write_to_bytes(
+        batch: &RecordBatch,
+        gzip_compression: bool,
+        row_index_stride: Option<usize>,
+        bloom_filters: bool,
+    ) -> Bytes {
+        let mut f = vec![];
+        let mut builder = ArrowWriterBuilder::new(&mut f, batch.schema());
+        if gzip_compression {
+            builder = builder.with_gzip_compression();
+        }
+        if let Some(row_index_stride) = row_index_stride {
+            builder = builder.with_row_index_stride(row_index_stride);
+        }
+        if bloom_filters {
+            builder = builder.with_bloom_filters();
+        }
+        let mut writer = builder.try_build().unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        Bytes::from(f)
     }
 
     #[test]
@@ -346,6 +568,161 @@ mod tests {
                 utf8_array,
                 binary_array,
                 boolean_array,
+            ],
+        )
+        .unwrap();
+
+        let rows = roundtrip(std::slice::from_ref(&batch));
+        assert_eq!(batch, rows[0]);
+    }
+
+    #[test]
+    fn test_roundtrip_write_gzip_compression() {
+        let array = Arc::new(Int64Array::from((0..1024).collect::<Vec<_>>()));
+        let schema = Schema::new(vec![Field::new("int64", ArrowDataType::Int64, false)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
+
+        let f = write_to_bytes(&batch, true, None, false);
+        let builder = ArrowReaderBuilder::try_new(f).unwrap();
+        assert!(builder.file_metadata().compression().is_some());
+
+        let rows = builder.build().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(batch, rows[0]);
+    }
+
+    #[test]
+    fn test_write_row_indexes() {
+        let array = Arc::new(Int64Array::from((0..12).collect::<Vec<_>>()));
+        let schema = Schema::new(vec![Field::new("int64", ArrowDataType::Int64, false)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
+
+        let mut f = write_to_bytes(&batch, false, Some(5), false);
+        let builder = ArrowReaderBuilder::try_new(f.clone()).unwrap();
+        assert_eq!(builder.file_metadata().row_index_stride(), Some(5));
+
+        let stripe = Stripe::new(
+            &mut f,
+            builder.file_metadata(),
+            builder.file_metadata().root_data_type(),
+            &builder.file_metadata().stripe_metadatas()[0],
+        )
+        .unwrap();
+        let row_index = stripe.read_row_indexes(builder.file_metadata()).unwrap();
+        let column_index = row_index.column(1).unwrap();
+
+        assert_eq!(column_index.num_row_groups(), 3);
+        assert_eq!(row_index.total_rows(), 12);
+        assert_eq!(row_index.rows_per_group(), 5);
+
+        let stats = column_index.row_group_stats(0).unwrap();
+        assert_eq!(stats.number_of_values(), 5);
+        assert!(!stats.has_null());
+        match stats.type_statistics().unwrap() {
+            TypeStatistics::Integer { min, max, sum } => {
+                assert_eq!((*min, *max, *sum), (0, 4, Some(10)));
+            }
+            other => panic!("expected integer stats, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_write_bloom_filters() {
+        let array = Arc::new(StringArray::from(vec!["alpha", "beta", "gamma", "delta"]));
+        let schema = Schema::new(vec![Field::new("name", ArrowDataType::Utf8, false)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
+
+        let mut f = write_to_bytes(&batch, false, Some(2), true);
+        let builder = ArrowReaderBuilder::try_new(f.clone()).unwrap();
+        let stripe = Stripe::new(
+            &mut f,
+            builder.file_metadata(),
+            builder.file_metadata().root_data_type(),
+            &builder.file_metadata().stripe_metadatas()[0],
+        )
+        .unwrap();
+        let row_index = stripe.read_row_indexes(builder.file_metadata()).unwrap();
+        let column_index = row_index.column(1).unwrap();
+        let first_group = column_index.entry(0).unwrap();
+        let bloom = first_group.bloom_filter.as_ref().unwrap();
+
+        assert!(bloom.might_contain(b"alpha"));
+        assert!(!bloom.might_contain(b"definitely-not-present"));
+    }
+
+    #[test]
+    fn test_write_file_and_stripe_statistics() {
+        let array = Arc::new(Int64Array::from((0..12).collect::<Vec<_>>()));
+        let schema = Schema::new(vec![Field::new("int64", ArrowDataType::Int64, false)]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).unwrap();
+
+        let f = write_to_bytes(&batch, false, None, false);
+        let builder = ArrowReaderBuilder::try_new(f).unwrap();
+        let file_stats = builder.file_metadata().column_file_statistics();
+        assert_eq!(file_stats.len(), 2);
+        assert_eq!(file_stats[0].number_of_values(), 12);
+        assert_eq!(file_stats[1].number_of_values(), 12);
+        match file_stats[1].type_statistics().unwrap() {
+            TypeStatistics::Integer { min, max, sum } => {
+                assert_eq!((*min, *max, *sum), (0, 11, Some(66)));
+            }
+            other => panic!("expected integer stats, got {other:?}"),
+        }
+
+        let stripe_stats = builder.file_metadata().stripe_metadatas()[0].column_statistics();
+        assert_eq!(stripe_stats.len(), 2);
+        assert_eq!(stripe_stats[0].number_of_values(), 12);
+        assert_eq!(stripe_stats[1].number_of_values(), 12);
+    }
+
+    #[test]
+    fn test_roundtrip_write_decimal_date_timestamp() {
+        let decimal_array = Arc::new(
+            Decimal128Array::from(vec![Some(12345), None, Some(-678), Some(0)])
+                .with_precision_and_scale(10, 2)
+                .unwrap(),
+        );
+        let date_array = Arc::new(Date32Array::from(vec![
+            Some(19_358),
+            None,
+            Some(0),
+            Some(-1),
+        ]));
+        let timestamp_array = Arc::new(TimestampNanosecondArray::from(vec![
+            Some(0),
+            None,
+            Some(1_672_531_200_123_456_789),
+            Some(-1_000_000_000),
+        ]));
+        let timestamp_utc_array = Arc::new(
+            TimestampNanosecondArray::from(vec![
+                Some(0),
+                None,
+                Some(1_672_531_200_000_000_000),
+                Some(1_000_000_000),
+            ])
+            .with_timezone("UTC"),
+        );
+        let schema = Schema::new(vec![
+            Field::new("decimal", ArrowDataType::Decimal128(10, 2), true),
+            Field::new("date", ArrowDataType::Date32, true),
+            Field::new(
+                "timestamp",
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new(
+                "timestamp_utc",
+                ArrowDataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+                true,
+            ),
+        ]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![
+                decimal_array,
+                date_array,
+                timestamp_array,
+                timestamp_utc_array,
             ],
         )
         .unwrap();
