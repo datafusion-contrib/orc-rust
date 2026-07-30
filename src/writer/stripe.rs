@@ -22,6 +22,7 @@ use arrow::datatypes::{DataType as ArrowDataType, FieldRef, SchemaRef};
 use prost::Message;
 use snafu::ResultExt;
 
+use crate::compression::Compressor;
 use crate::error::{IoSnafu, Result};
 use crate::memory::EstimateMemory;
 use crate::proto;
@@ -69,6 +70,7 @@ pub struct StripeWriter<W> {
     /// Flattened columns, in order of their column ID.
     columns: Vec<Box<dyn ColumnStripeEncoder>>,
     pub row_count: usize,
+    compressor: Compressor,
 }
 
 impl<W> EstimateMemory for StripeWriter<W> {
@@ -80,12 +82,13 @@ impl<W> EstimateMemory for StripeWriter<W> {
 }
 
 impl<W: Write> StripeWriter<W> {
-    pub fn new(writer: W, schema: &SchemaRef) -> Self {
+    pub fn new(writer: W, schema: &SchemaRef, compressor: Compressor) -> Self {
         let columns = schema.fields().iter().map(create_encoder).collect();
         Self {
             writer,
             columns,
             row_count: 0,
+            compressor,
         }
     }
 
@@ -129,6 +132,7 @@ impl<W: Write> StripeWriter<W> {
             // Flush the streams to the writer
             for s in streams {
                 let (kind, bytes) = s.into_parts();
+                let bytes = self.compressor.compress(&bytes)?;
                 let length = bytes.len();
                 self.writer.write_all(&bytes).context(IoSnafu)?;
                 data_length += length as u64;
@@ -148,6 +152,7 @@ impl<W: Write> StripeWriter<W> {
         };
 
         let footer_bytes = stripe_footer.encode_to_vec();
+        let footer_bytes = self.compressor.compress(&footer_bytes)?;
         let footer_length = footer_bytes.len() as u64;
         let row_count = self.row_count;
         self.writer.write_all(&footer_bytes).context(IoSnafu)?;
@@ -165,8 +170,8 @@ impl<W: Write> StripeWriter<W> {
     }
 
     /// When finished writing all stripes, return the inner writer.
-    pub fn finish(self) -> W {
-        self.writer
+    pub fn finish(self) -> (W, Compressor) {
+        (self.writer, self.compressor)
     }
 }
 

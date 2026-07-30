@@ -25,6 +25,7 @@ use prost::Message;
 use snafu::{ensure, ResultExt};
 
 use crate::{
+    compression::{CompressionType, Compressor},
     error::{IoSnafu, Result, UnexpectedSnafu},
     memory::EstimateMemory,
     proto,
@@ -38,6 +39,8 @@ pub struct ArrowWriterBuilder<W> {
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    compression: Option<CompressionType>,
+    compression_block_size: Option<usize>,
 }
 
 impl<W: Write> ArrowWriterBuilder<W> {
@@ -50,6 +53,8 @@ impl<W: Write> ArrowWriterBuilder<W> {
             batch_size: 1024,
             // 64 MiB
             stripe_byte_size: 64 * 1024 * 1024,
+            compression: None,
+            compression_block_size: None,
         }
     }
 
@@ -66,12 +71,25 @@ impl<W: Write> ArrowWriterBuilder<W> {
         self
     }
 
+    /// Set the compression codec for this ORC file.
+    pub fn with_compression(mut self, compression: CompressionType) -> Self {
+        self.compression = Some(compression);
+        self
+    }
+
+    /// Set the compression block size. Default is 256 KiB.
+    pub fn with_compression_block_size(mut self, block_size: usize) -> Self {
+        self.compression_block_size = Some(block_size);
+        self
+    }
+
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
+        let compressor = Compressor::new(self.compression, self.compression_block_size)?;
         // Required magic "ORC" bytes at start of file
         self.writer.write_all(b"ORC").context(IoSnafu)?;
-        let writer = StripeWriter::new(self.writer, &self.schema);
+        let writer = StripeWriter::new(self.writer, &self.schema, compressor);
         Ok(ArrowWriter {
             writer,
             schema: self.schema,
@@ -138,13 +156,23 @@ impl<W: Write> ArrowWriter<W> {
         if self.writer.row_count > 0 {
             self.flush_stripe()?;
         }
-        let footer = serialize_footer(&self.written_stripes, &self.schema);
-        let footer = footer.encode_to_vec();
-        let postscript = serialize_postscript(footer.len() as u64);
-        let postscript = postscript.encode_to_vec();
+        let footer = serialize_footer(&self.written_stripes, &self.schema).encode_to_vec();
+        let metadata = proto::Metadata::default().encode_to_vec();
+
+        let (mut writer, mut compressor) = self.writer.finish();
+        let metadata = compressor.compress(&metadata)?;
+        let footer = compressor.compress(&footer)?;
+
+        let postscript = serialize_postscript(
+            footer.len() as u64,
+            metadata.len() as u64,
+            compressor.compression(),
+            compressor.block_size().map(|size| size as u64),
+        )
+        .encode_to_vec();
         let postscript_len = postscript.len() as u8;
 
-        let mut writer = self.writer.finish();
+        writer.write_all(&metadata).context(IoSnafu)?;
         writer.write_all(&footer).context(IoSnafu)?;
         writer.write_all(&postscript).context(IoSnafu)?;
         // Postscript length as last byte
@@ -245,13 +273,23 @@ fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto:
     }
 }
 
-fn serialize_postscript(footer_length: u64) -> proto::PostScript {
+fn serialize_postscript(
+    footer_length: u64,
+    metadata_length: u64,
+    compression: Option<CompressionType>,
+    compression_block_size: Option<u64>,
+) -> proto::PostScript {
     proto::PostScript {
         footer_length: Some(footer_length),
-        compression: Some(proto::CompressionKind::None.into()), // TODO: support compression
-        compression_block_size: None,
+        compression: Some(
+            compression
+                .map(CompressionType::to_proto)
+                .unwrap_or(proto::CompressionKind::None)
+                .into(),
+        ),
+        compression_block_size,
         version: vec![0, 12],
-        metadata_length: Some(0),       // TODO: statistics
+        metadata_length: Some(metadata_length),
         writer_version: Some(u32::MAX), // TODO: check which version to use
         stripe_statistics_length: None,
         magic: Some("ORC".to_string()),
@@ -260,7 +298,7 @@ fn serialize_postscript(footer_length: u64) -> proto::PostScript {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{io::Read, sync::Arc};
 
     use arrow::{
         array::{
@@ -273,8 +311,13 @@ mod tests {
         datatypes::{DataType as ArrowDataType, Field, Schema},
     };
     use bytes::Bytes;
+    use prost::Message;
 
-    use crate::{stripe::Stripe, ArrowReaderBuilder};
+    use crate::{
+        compression::{CompressionType, Decompressor},
+        stripe::Stripe,
+        ArrowReaderBuilder,
+    };
 
     use super::*;
 
@@ -532,5 +575,197 @@ mod tests {
         assert_eq!(rows[0].num_columns(), 1);
         // Ensure read array has no null buffer
         assert!(rows[0].column(0).nulls().is_none());
+    }
+
+    fn write_file(
+        schema: SchemaRef,
+        batch: Option<&RecordBatch>,
+        compression: Option<CompressionType>,
+        block_size: Option<usize>,
+        stripe_byte_size: usize,
+    ) -> Bytes {
+        let mut file = Vec::new();
+        let mut builder =
+            ArrowWriterBuilder::new(&mut file, schema).with_stripe_byte_size(stripe_byte_size);
+        if let Some(compression) = compression {
+            builder = builder.with_compression(compression);
+        }
+        if let Some(block_size) = block_size {
+            builder = builder.with_compression_block_size(block_size);
+        }
+        let mut writer = builder.try_build().unwrap();
+        if let Some(batch) = batch {
+            writer.write(batch).unwrap();
+        }
+        writer.close().unwrap();
+        Bytes::from(file)
+    }
+
+    fn decode_postscript(file: &Bytes) -> proto::PostScript {
+        let postscript_len = file[file.len() - 1] as usize;
+        let postscript_start = file.len() - 1 - postscript_len;
+        proto::PostScript::decode(&file[postscript_start..file.len() - 1]).unwrap()
+    }
+
+    #[test]
+    fn test_writer_compression_modes_and_postscript() {
+        let values = (0..4096)
+            .map(|index| format!("compressible-value-{}", index % 8))
+            .collect::<Vec<_>>();
+        let array = Arc::new(StringArray::from(values));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            ArrowDataType::Utf8,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
+
+        for (compression, expected_kind, expected_block_size) in [
+            (None, proto::CompressionKind::None, None),
+            (
+                Some(CompressionType::Zlib),
+                proto::CompressionKind::Zlib,
+                Some(64),
+            ),
+            (
+                Some(CompressionType::Snappy),
+                proto::CompressionKind::Snappy,
+                Some(64),
+            ),
+            (
+                Some(CompressionType::Lz4),
+                proto::CompressionKind::Lz4,
+                Some(64),
+            ),
+            (
+                Some(CompressionType::Zstd),
+                proto::CompressionKind::Zstd,
+                Some(64),
+            ),
+        ] {
+            let block_size = compression.map(|_| 64);
+            let file = write_file(
+                schema.clone(),
+                Some(&batch),
+                compression,
+                block_size,
+                usize::MAX,
+            );
+            let postscript = decode_postscript(&file);
+            assert_eq!(postscript.compression(), expected_kind);
+            assert_eq!(postscript.compression_block_size, expected_block_size);
+            assert_eq!(postscript.metadata_length, Some(0));
+            assert!(postscript.footer_length.unwrap() > 0);
+
+            let reader = ArrowReaderBuilder::try_new(file).unwrap().build();
+            let rows = reader.collect::<Result<Vec<_>, _>>().unwrap();
+            assert_eq!(rows, vec![batch.clone()]);
+        }
+
+        let file = write_file(
+            schema,
+            None,
+            Some(CompressionType::Zstd),
+            Some(64),
+            usize::MAX,
+        );
+        let postscript = decode_postscript(&file);
+        assert_eq!(postscript.compression(), proto::CompressionKind::Zstd);
+        assert_eq!(postscript.compression_block_size, Some(64));
+        assert_eq!(postscript.metadata_length, Some(0));
+
+        let reader = ArrowReaderBuilder::try_new(file).unwrap();
+        assert_eq!(reader.file_metadata().number_of_rows(), 0);
+        assert!(reader.file_metadata().stripe_metadatas().is_empty());
+        assert!(reader
+            .build()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_writer_rejects_invalid_compression_configuration() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            ArrowDataType::Int64,
+            false,
+        )]));
+
+        for compression in [None, Some(CompressionType::Zstd)] {
+            for block_size in [0, 1 << 23] {
+                let mut file = Vec::new();
+                let mut builder = ArrowWriterBuilder::new(&mut file, schema.clone())
+                    .with_compression_block_size(block_size);
+                if let Some(compression) = compression {
+                    builder = builder.with_compression(compression);
+                }
+                assert!(builder.try_build().is_err());
+                assert!(file.is_empty());
+            }
+        }
+
+        let mut file = Vec::new();
+        let result = ArrowWriterBuilder::new(&mut file, schema)
+            .with_compression(CompressionType::Lzo)
+            .try_build();
+        assert!(result.is_err());
+        assert!(file.is_empty());
+    }
+
+    #[test]
+    fn test_compressed_multi_stripe_physical_offsets() {
+        let data = (0..100_000).collect::<Vec<i64>>();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            ArrowDataType::Int64,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(data))]).unwrap();
+        let file = write_file(
+            batch.schema(),
+            Some(&batch),
+            Some(CompressionType::Zstd),
+            Some(64),
+            256,
+        );
+
+        let builder = ArrowReaderBuilder::try_new(file.clone()).unwrap();
+        let stripes = builder.file_metadata().stripe_metadatas();
+        assert!(stripes.len() > 1);
+        assert_eq!(stripes[0].offset(), 3);
+        for pair in stripes.windows(2) {
+            let previous = &pair[0];
+            let next = &pair[1];
+            assert_eq!(
+                next.offset(),
+                previous.offset()
+                    + previous.index_length()
+                    + previous.data_length()
+                    + previous.footer_length()
+            );
+        }
+
+        for stripe in stripes {
+            let footer_start = stripe.footer_offset() as usize;
+            let footer_end = footer_start + stripe.footer_length() as usize;
+            let mut decoded_footer = Vec::new();
+            Decompressor::new(
+                file.slice(footer_start..footer_end),
+                builder.file_metadata().compression(),
+                Vec::new(),
+            )
+            .read_to_end(&mut decoded_footer)
+            .unwrap();
+            let footer = proto::StripeFooter::decode(decoded_footer.as_slice()).unwrap();
+            let stream_bytes = footer.streams.iter().map(|s| s.length()).sum::<u64>();
+            assert_eq!(stream_bytes, stripe.data_length());
+            assert_eq!(stripe.index_length(), 0);
+        }
+
+        let reader = builder.build();
+        let rows = reader.collect::<Result<Vec<_>, _>>().unwrap();
+        let actual = concat_batches(&batch.schema(), rows.iter()).unwrap();
+        assert_eq!(actual, batch);
     }
 }

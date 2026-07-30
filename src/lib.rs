@@ -34,12 +34,15 @@
 //! # use std::fs::File;
 //! # use arrow::array::RecordBatch;
 //! # use orc_rust::arrow_writer::ArrowWriterBuilder;
+//! # use orc_rust::compression::CompressionType;
 //! # fn get_record_batch() -> RecordBatch {
 //! #     unimplemented!()
 //! # }
 //! let file = File::create("/path/to/file.orc").unwrap();
 //! let batch = get_record_batch();
 //! let mut writer = ArrowWriterBuilder::new(file, batch.schema())
+//!     .with_compression(CompressionType::Zstd)
+//!     .with_compression_block_size(256 * 1024)
 //!     .try_build()
 //!     .unwrap();
 //! writer.write(&batch).unwrap();

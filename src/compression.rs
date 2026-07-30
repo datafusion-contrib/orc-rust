@@ -18,7 +18,10 @@
 // Modified from https://github.com/DataEngineeringLabs/orc-format/blob/416490db0214fc51d53289253c0ee91f7fc9bc17/src/read/decompress/mod.rs
 //! Related code for handling compression and decompression of ORC files.
 
-use std::io::{Read, Write};
+use std::{
+    borrow::Cow,
+    io::{Read, Write},
+};
 
 use bytes::{Bytes, BytesMut};
 use fallible_streaming_iterator::FallibleStreamingIterator;
@@ -441,28 +444,36 @@ fn get_compressor_variant(compression: CompressionType) -> Result<Box<dyn Compre
 }
 
 pub(crate) struct Compressor {
-    compression: CompressionType,
-    block_size: usize,
-    compressor: Box<dyn CompressorVariant>,
+    compression: Option<CompressionType>,
+    block_size: Option<usize>,
+    compressor: Option<Box<dyn CompressorVariant>>,
     scratch: Vec<u8>,
 }
 
 impl Compressor {
-    pub(crate) fn new(compression: CompressionType) -> Result<Self> {
-        Self::with_block_size(compression, DEFAULT_COMPRESSION_BLOCK_SIZE as usize)
-    }
-
-    pub(crate) fn with_block_size(compression: CompressionType, block_size: usize) -> Result<Self> {
-        if block_size == 0 || (block_size as u64) >= MAX_COMPRESSION_BLOCK_SIZE {
-            return error::UnexpectedSnafu {
-                msg: format!(
-                    "compression block size must be in 1..{}, got {}",
-                    MAX_COMPRESSION_BLOCK_SIZE, block_size
-                ),
+    pub(crate) fn new(
+        compression: Option<CompressionType>,
+        block_size: Option<usize>,
+    ) -> Result<Self> {
+        if let Some(block_size) = block_size {
+            if block_size == 0 || (block_size as u64) >= MAX_COMPRESSION_BLOCK_SIZE {
+                return error::UnexpectedSnafu {
+                    msg: format!(
+                        "compression block size must be in 1..{}, got {}",
+                        MAX_COMPRESSION_BLOCK_SIZE, block_size
+                    ),
+                }
+                .fail();
             }
-            .fail();
         }
-        let compressor = get_compressor_variant(compression)?;
+
+        let (block_size, compressor) = match compression {
+            Some(compression) => {
+                let block_size = block_size.unwrap_or(DEFAULT_COMPRESSION_BLOCK_SIZE as usize);
+                (Some(block_size), Some(get_compressor_variant(compression)?))
+            }
+            None => (None, None),
+        };
         Ok(Self {
             compression,
             block_size,
@@ -471,11 +482,15 @@ impl Compressor {
         })
     }
 
-    pub(crate) fn compress(&mut self, input: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn compress<'a>(&mut self, input: &'a [u8]) -> Result<Cow<'a, [u8]>> {
+        let Some(compressor) = self.compressor.as_mut() else {
+            return Ok(Cow::Borrowed(input));
+        };
+        let block_size = self.block_size.expect("enabled compressor has block size");
         let mut output = Vec::with_capacity(input.len());
-        for block in input.chunks(self.block_size) {
+        for block in input.chunks(block_size) {
             self.scratch.clear();
-            self.compressor.compress_block(block, &mut self.scratch)?;
+            compressor.compress_block(block, &mut self.scratch)?;
 
             let (payload, header) = if self.scratch.len() < block.len() {
                 (
@@ -488,14 +503,14 @@ impl Compressor {
             output.extend_from_slice(&header.encode());
             output.extend_from_slice(payload);
         }
-        Ok(output)
+        Ok(Cow::Owned(output))
     }
 
-    pub(crate) fn compression(&self) -> CompressionType {
+    pub(crate) fn compression(&self) -> Option<CompressionType> {
         self.compression
     }
 
-    pub(crate) fn block_size(&self) -> usize {
+    pub(crate) fn block_size(&self) -> Option<usize> {
         self.block_size
     }
 }
@@ -522,18 +537,24 @@ mod tests {
 
     #[test]
     fn rejects_invalid_writer_compression() {
-        assert!(Compressor::with_block_size(CompressionType::Zstd, 0).is_err());
-        assert!(Compressor::with_block_size(
-            CompressionType::Zstd,
-            MAX_COMPRESSION_BLOCK_SIZE as usize,
+        assert!(Compressor::new(Some(CompressionType::Zstd), Some(0)).is_err());
+        assert!(Compressor::new(
+            Some(CompressionType::Zstd),
+            Some(MAX_COMPRESSION_BLOCK_SIZE as usize),
         )
         .is_err());
-        assert!(Compressor::new(CompressionType::Lzo).is_err());
+        assert!(Compressor::new(Some(CompressionType::Lzo), None).is_err());
     }
 
     #[test]
     fn handles_empty_original_and_chunked_blocks() {
-        let mut compressor = Compressor::with_block_size(CompressionType::Zstd, 4).unwrap();
+        let mut disabled = Compressor::new(None, None).unwrap();
+        let encoded = disabled.compress(b"uncompressed").unwrap();
+        assert!(matches!(encoded, Cow::Borrowed(b"uncompressed")));
+        assert!(disabled.compression().is_none());
+        assert!(disabled.block_size().is_none());
+
+        let mut compressor = Compressor::new(Some(CompressionType::Zstd), Some(4)).unwrap();
         assert!(compressor.compress(&[]).unwrap().is_empty());
 
         for compression_type in [
@@ -542,14 +563,14 @@ mod tests {
             CompressionType::Lz4,
             CompressionType::Zstd,
         ] {
-            let mut compressor = Compressor::with_block_size(compression_type, 64).unwrap();
+            let mut compressor = Compressor::new(Some(compression_type), Some(64)).unwrap();
             let encoded = compressor.compress(b"x").unwrap();
-            assert_eq!(encoded, [3, 0, 0, b'x']);
+            assert_eq!(encoded.as_ref(), [3, 0, 0, b'x']);
         }
 
         let encoded = compressor.compress(b"abcdefghi").unwrap();
         assert_eq!(
-            encoded,
+            encoded.as_ref(),
             [9, 0, 0, b'a', b'b', b'c', b'd', 9, 0, 0, b'e', b'f', b'g', b'h', 3, 0, 0, b'i',]
         );
     }
@@ -563,7 +584,7 @@ mod tests {
             CompressionType::Lz4,
             CompressionType::Zstd,
         ] {
-            let mut compressor = Compressor::with_block_size(compression_type, 64).unwrap();
+            let mut compressor = Compressor::new(Some(compression_type), Some(64)).unwrap();
             let encoded = compressor.compress(&input).unwrap();
             let header = CompressionHeader::decode([encoded[0], encoded[1], encoded[2]]);
             assert!(
@@ -573,7 +594,7 @@ mod tests {
 
             let compression = Compression::from_proto(compression_type.to_proto(), Some(64));
             let mut decoded = Vec::new();
-            Decompressor::new(Bytes::from(encoded), compression, Vec::new())
+            Decompressor::new(Bytes::from(encoded.into_owned()), compression, Vec::new())
                 .read_to_end(&mut decoded)
                 .unwrap();
             assert_eq!(decoded, input);
