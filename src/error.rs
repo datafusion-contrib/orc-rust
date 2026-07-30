@@ -165,6 +165,20 @@ pub enum OrcError {
         source: lz4_flex::block::DecompressError,
     },
 
+    #[snafu(display("Failed to compress Snappy block: {}", source))]
+    CompressSnappy {
+        #[snafu(implicit)]
+        location: Location,
+        source: snap::Error,
+    },
+
+    #[snafu(display("Failed to compress LZ4 block: {}", source))]
+    CompressLz4 {
+        #[snafu(implicit)]
+        location: Location,
+        source: lz4_flex::block::CompressError,
+    },
+
     #[snafu(display("Arrow error: {}", source))]
     Arrow {
         source: arrow::error::ArrowError,

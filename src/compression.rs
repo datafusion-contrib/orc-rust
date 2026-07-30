@@ -16,9 +16,9 @@
 // under the License.
 
 // Modified from https://github.com/DataEngineeringLabs/orc-format/blob/416490db0214fc51d53289253c0ee91f7fc9bc17/src/read/decompress/mod.rs
-//! Related code for handling decompression of ORC files.
+//! Related code for handling compression and decompression of ORC files.
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use bytes::{Bytes, BytesMut};
 use fallible_streaming_iterator::FallibleStreamingIterator;
@@ -30,6 +30,9 @@ use crate::proto::{self, CompressionKind};
 // Spec states default is 256K
 const DEFAULT_COMPRESSION_BLOCK_SIZE: u64 = 256 * 1024;
 
+/// Bits 1..23 of the 3-byte header store the payload length.
+const MAX_COMPRESSION_BLOCK_SIZE: u64 = 1 << 23;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Compression {
     compression_type: CompressionType,
@@ -37,7 +40,6 @@ pub struct Compression {
     /// Use to size the scratch buffer appropriately.
     max_decompressed_block_size: usize,
 }
-
 impl std::fmt::Display for Compression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -100,6 +102,18 @@ impl std::fmt::Display for CompressionType {
     }
 }
 
+impl CompressionType {
+    pub(crate) fn to_proto(self) -> proto::CompressionKind {
+        match self {
+            Self::Zlib => proto::CompressionKind::Zlib,
+            Self::Snappy => proto::CompressionKind::Snappy,
+            Self::Lzo => proto::CompressionKind::Lzo,
+            Self::Lz4 => proto::CompressionKind::Lz4,
+            Self::Zstd => proto::CompressionKind::Zstd,
+        }
+    }
+}
+
 /// Indicates length of block and whether it's compressed or not.
 #[derive(Debug, PartialEq, Eq)]
 enum CompressionHeader {
@@ -110,19 +124,32 @@ enum CompressionHeader {
 /// ORC files are compressed in blocks, with a 3 byte header at the start
 /// of these blocks indicating the length of the block and whether it's
 /// compressed or not.
-fn decode_header(bytes: [u8; 3]) -> CompressionHeader {
-    let bytes = [bytes[0], bytes[1], bytes[2], 0];
-    let length_and_flag = u32::from_le_bytes(bytes);
-    let is_original = length_and_flag & 1 == 1;
-    let length = length_and_flag >> 1;
-    if is_original {
-        CompressionHeader::Original(length)
-    } else {
-        CompressionHeader::Compressed(length)
+impl CompressionHeader {
+    fn decode(bytes: [u8; 3]) -> Self {
+        let bytes = [bytes[0], bytes[1], bytes[2], 0];
+        let length_and_flag = u32::from_le_bytes(bytes);
+        let is_original = length_and_flag & 1 == 1;
+        let length = length_and_flag >> 1;
+        if is_original {
+            Self::Original(length)
+        } else {
+            Self::Compressed(length)
+        }
+    }
+
+    fn encode(self) -> [u8; 3] {
+        let (length, is_original) = match self {
+            Self::Original(length) => (length, 1),
+            Self::Compressed(length) => (length, 0),
+        };
+        debug_assert!((length as u64) < MAX_COMPRESSION_BLOCK_SIZE);
+        let encoded = (length << 1) | is_original;
+        let bytes = encoded.to_le_bytes();
+        [bytes[0], bytes[1], bytes[2]]
     }
 }
 
-pub(crate) trait DecompressorVariant: Send {
+trait DecompressorVariant: Send {
     fn decompress_block(&self, compressed_bytes: &[u8], scratch: &mut Vec<u8>) -> Result<()>;
 }
 
@@ -252,7 +279,7 @@ impl FallibleStreamingIterator for DecompressorIter {
                 // TODO: take stratch from current State::Compressed for re-use
                 let header = self.stream.split_to(3);
                 let header = [header[0], header[1], header[2]];
-                match decode_header(header) {
+                match CompressionHeader::decode(header) {
                     CompressionHeader::Original(length) => {
                         let original = self.stream.split_to(length as usize);
                         self.current = Some(State::Original(original.into()));
@@ -346,26 +373,210 @@ impl std::io::Read for Decompressor {
     }
 }
 
+trait CompressorVariant: Send {
+    fn compress_block(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<()>;
+}
+
+struct ZlibCompressor;
+
+impl CompressorVariant for ZlibCompressor {
+    fn compress_block(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<()> {
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(output, flate2::Compression::default());
+        encoder.write_all(input).context(error::IoSnafu)?;
+        encoder.finish().context(error::IoSnafu)?;
+        Ok(())
+    }
+}
+
+struct SnappyCompressor(snap::raw::Encoder);
+
+impl CompressorVariant for SnappyCompressor {
+    fn compress_block(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<()> {
+        output.resize(snap::raw::max_compress_len(input.len()), 0);
+        let written = self
+            .0
+            .compress(input, output)
+            .context(error::CompressSnappySnafu)?;
+        output.truncate(written);
+        Ok(())
+    }
+}
+
+struct Lz4Compressor;
+
+impl CompressorVariant for Lz4Compressor {
+    fn compress_block(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<()> {
+        output.resize(lz4_flex::block::get_maximum_output_size(input.len()), 0);
+        let written =
+            lz4_flex::block::compress_into(input, output).context(error::CompressLz4Snafu)?;
+        output.truncate(written);
+        Ok(())
+    }
+}
+
+struct ZstdCompressor(zstd::bulk::Compressor<'static>);
+
+impl CompressorVariant for ZstdCompressor {
+    fn compress_block(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<()> {
+        let compressed = self.0.compress(input).context(error::IoSnafu)?;
+        output.extend_from_slice(&compressed);
+        Ok(())
+    }
+}
+
+fn get_compressor_variant(compression: CompressionType) -> Result<Box<dyn CompressorVariant>> {
+    match compression {
+        CompressionType::Zlib => Ok(Box::new(ZlibCompressor)),
+        CompressionType::Snappy => Ok(Box::new(SnappyCompressor(snap::raw::Encoder::new()))),
+        CompressionType::Lz4 => Ok(Box::new(Lz4Compressor)),
+        CompressionType::Zstd => Ok(Box::new(ZstdCompressor(
+            zstd::bulk::Compressor::new(0).context(error::IoSnafu)?,
+        ))),
+        CompressionType::Lzo => error::UnexpectedSnafu {
+            msg: "LZO compression is not supported by the ORC writer",
+        }
+        .fail(),
+    }
+}
+
+pub(crate) struct Compressor {
+    compression: CompressionType,
+    block_size: usize,
+    compressor: Box<dyn CompressorVariant>,
+    scratch: Vec<u8>,
+}
+
+impl Compressor {
+    pub(crate) fn new(compression: CompressionType) -> Result<Self> {
+        Self::with_block_size(compression, DEFAULT_COMPRESSION_BLOCK_SIZE as usize)
+    }
+
+    pub(crate) fn with_block_size(compression: CompressionType, block_size: usize) -> Result<Self> {
+        if block_size == 0 || (block_size as u64) >= MAX_COMPRESSION_BLOCK_SIZE {
+            return error::UnexpectedSnafu {
+                msg: format!(
+                    "compression block size must be in 1..{}, got {}",
+                    MAX_COMPRESSION_BLOCK_SIZE, block_size
+                ),
+            }
+            .fail();
+        }
+        let compressor = get_compressor_variant(compression)?;
+        Ok(Self {
+            compression,
+            block_size,
+            compressor,
+            scratch: Vec::new(),
+        })
+    }
+
+    pub(crate) fn compress(&mut self, input: &[u8]) -> Result<Vec<u8>> {
+        let mut output = Vec::with_capacity(input.len());
+        for block in input.chunks(self.block_size) {
+            self.scratch.clear();
+            self.compressor.compress_block(block, &mut self.scratch)?;
+
+            let (payload, header) = if self.scratch.len() < block.len() {
+                (
+                    self.scratch.as_slice(),
+                    CompressionHeader::Compressed(self.scratch.len() as u32),
+                )
+            } else {
+                (block, CompressionHeader::Original(block.len() as u32))
+            };
+            output.extend_from_slice(&header.encode());
+            output.extend_from_slice(payload);
+        }
+        Ok(output)
+    }
+
+    pub(crate) fn compression(&self) -> CompressionType {
+        self.compression
+    }
+
+    pub(crate) fn block_size(&self) -> usize {
+        self.block_size
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn decode_uncompressed() {
-        // 5 uncompressed = [0x0b, 0x00, 0x00] = [0b1011, 0, 0]
-        let bytes = [0b1011, 0, 0];
-
-        let expected = CompressionHeader::Original(5);
-        let actual = decode_header(bytes);
-        assert_eq!(expected, actual);
+    fn compression_header_roundtrip() {
+        for (expected, bytes) in [
+            (CompressionHeader::Original(5), [0x0b, 0x00, 0x00]),
+            (CompressionHeader::Compressed(100_000), [0x40, 0x0d, 0x03]),
+            (
+                CompressionHeader::Original((MAX_COMPRESSION_BLOCK_SIZE - 1) as u32),
+                [0xff, 0xff, 0xff],
+            ),
+        ] {
+            let decoded = CompressionHeader::decode(bytes);
+            assert_eq!(decoded, expected);
+            assert_eq!(decoded.encode(), bytes);
+        }
     }
 
     #[test]
-    fn decode_compressed() {
-        // 100_000 compressed = [0x40, 0x0d, 0x03] = [0b01000000, 0b00001101, 0b00000011]
-        let bytes = [0b0100_0000, 0b0000_1101, 0b0000_0011];
-        let expected = CompressionHeader::Compressed(100_000);
-        let actual = decode_header(bytes);
-        assert_eq!(expected, actual);
+    fn rejects_invalid_writer_compression() {
+        assert!(Compressor::with_block_size(CompressionType::Zstd, 0).is_err());
+        assert!(Compressor::with_block_size(
+            CompressionType::Zstd,
+            MAX_COMPRESSION_BLOCK_SIZE as usize,
+        )
+        .is_err());
+        assert!(Compressor::new(CompressionType::Lzo).is_err());
+    }
+
+    #[test]
+    fn handles_empty_original_and_chunked_blocks() {
+        let mut compressor = Compressor::with_block_size(CompressionType::Zstd, 4).unwrap();
+        assert!(compressor.compress(&[]).unwrap().is_empty());
+
+        for compression_type in [
+            CompressionType::Zlib,
+            CompressionType::Snappy,
+            CompressionType::Lz4,
+            CompressionType::Zstd,
+        ] {
+            let mut compressor = Compressor::with_block_size(compression_type, 64).unwrap();
+            let encoded = compressor.compress(b"x").unwrap();
+            assert_eq!(encoded, [3, 0, 0, b'x']);
+        }
+
+        let encoded = compressor.compress(b"abcdefghi").unwrap();
+        assert_eq!(
+            encoded,
+            [9, 0, 0, b'a', b'b', b'c', b'd', 9, 0, 0, b'e', b'f', b'g', b'h', 3, 0, 0, b'i',]
+        );
+    }
+
+    #[test]
+    fn roundtrips_all_writer_codecs() {
+        let input = vec![0; 1024];
+        for compression_type in [
+            CompressionType::Zlib,
+            CompressionType::Snappy,
+            CompressionType::Lz4,
+            CompressionType::Zstd,
+        ] {
+            let mut compressor = Compressor::with_block_size(compression_type, 64).unwrap();
+            let encoded = compressor.compress(&input).unwrap();
+            let header = CompressionHeader::decode([encoded[0], encoded[1], encoded[2]]);
+            assert!(
+                matches!(header, CompressionHeader::Compressed(length) if length < 64),
+                "{compression_type} unexpectedly stored a compressible block as original"
+            );
+
+            let compression = Compression::from_proto(compression_type.to_proto(), Some(64));
+            let mut decoded = Vec::new();
+            Decompressor::new(Bytes::from(encoded), compression, Vec::new())
+                .read_to_end(&mut decoded)
+                .unwrap();
+            assert_eq!(decoded, input);
+        }
     }
 }
