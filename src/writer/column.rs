@@ -20,21 +20,26 @@ use std::marker::PhantomData;
 use arrow::{
     array::{Array, ArrayRef, AsArray},
     datatypes::{
-        ArrowPrimitiveType, ByteArrayType, Float32Type, Float64Type, GenericBinaryType,
-        GenericStringType, Int16Type, Int32Type, Int64Type, Int8Type,
+        ArrowPrimitiveType, ArrowTimestampType, ByteArrayType, Date32Type, Decimal128Type,
+        Float32Type, Float64Type, GenericBinaryType, GenericStringType, Int16Type, Int32Type,
+        Int64Type, Int8Type, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+        TimestampNanosecondType, TimestampSecondType,
     },
 };
 use bytes::{BufMut, BytesMut};
+use snafu::ensure;
 
 use crate::{
     encoding::{
         boolean::BooleanEncoder,
         byte::ByteRleEncoder,
         float::FloatEncoder,
-        integer::{rle_v2::RleV2Encoder, NInt, SignedEncoding, UnsignedEncoding},
+        integer::{
+            rle_v2::RleV2Encoder, write_varint_zigzagged, NInt, SignedEncoding, UnsignedEncoding,
+        },
         PrimitiveValueEncoder,
     },
-    error::Result,
+    error::{Result, UnexpectedSnafu},
     memory::EstimateMemory,
     writer::StreamType,
 };
@@ -390,12 +395,256 @@ where
     }
 }
 
+pub struct DecimalColumnEncoder {
+    data: BytesMut,
+    scale: RleV2Encoder<i32, SignedEncoding>,
+    present: Option<BooleanEncoder>,
+    encoded_count: usize,
+    fixed_scale: i8,
+}
+
+impl DecimalColumnEncoder {
+    pub fn new(fixed_scale: i8) -> Self {
+        Self {
+            data: BytesMut::new(),
+            scale: RleV2Encoder::new(),
+            present: None,
+            encoded_count: 0,
+            fixed_scale,
+        }
+    }
+
+    fn write_value(&mut self, value: i128) {
+        write_varint_zigzagged::<i128, SignedEncoding>(&mut self.data, value);
+        self.scale.write_one(self.fixed_scale as i32);
+    }
+}
+
+impl EstimateMemory for DecimalColumnEncoder {
+    fn estimate_memory_size(&self) -> usize {
+        self.data.len()
+            + self.scale.estimate_memory_size()
+            + self
+                .present
+                .as_ref()
+                .map(|p| p.estimate_memory_size())
+                .unwrap_or(0)
+    }
+}
+
+impl ColumnStripeEncoder for DecimalColumnEncoder {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_primitive::<Decimal128Type>();
+        match (array.nulls(), &mut self.present) {
+            (Some(null_buffer), Some(present)) => {
+                present.extend(null_buffer);
+                for index in null_buffer.valid_indices() {
+                    self.write_value(array.value(index));
+                }
+            }
+            (Some(null_buffer), None) => {
+                let mut present = BooleanEncoder::new();
+                present.extend_present(self.encoded_count);
+                present.extend(null_buffer);
+                self.present = Some(present);
+                for index in null_buffer.valid_indices() {
+                    self.write_value(array.value(index));
+                }
+            }
+            (None, _) => {
+                for value in array.values() {
+                    self.write_value(*value);
+                }
+                if let Some(present) = self.present.as_mut() {
+                    present.extend_present(array.len())
+                }
+            }
+        }
+        self.encoded_count += array.len() - array.null_count();
+        Ok(())
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::DirectV2
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        let data = Stream {
+            kind: StreamType::Data,
+            bytes: std::mem::take(&mut self.data).into(),
+        };
+        let secondary = Stream {
+            kind: StreamType::Secondary,
+            bytes: self.scale.take_inner(),
+        };
+        self.encoded_count = 0;
+        match &mut self.present {
+            Some(present) => {
+                let present = Stream {
+                    kind: StreamType::Present,
+                    bytes: present.finish(),
+                };
+                vec![data, secondary, present]
+            }
+            None => vec![data, secondary],
+        }
+    }
+}
+
+pub struct TimestampColumnEncoder<T: ArrowTimestampType> {
+    data: RleV2Encoder<i64, SignedEncoding>,
+    secondary: RleV2Encoder<i64, UnsignedEncoding>,
+    present: Option<BooleanEncoder>,
+    encoded_count: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: ArrowTimestampType> TimestampColumnEncoder<T> {
+    pub fn new() -> Self {
+        Self {
+            data: RleV2Encoder::new(),
+            secondary: RleV2Encoder::new(),
+            present: None,
+            encoded_count: 0,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn write_value(&mut self, value: i64) -> Result<()> {
+        let nanos_since_epoch = timestamp_value_to_nanos::<T>(value);
+        let (seconds_since_base, encoded_nanos) = encode_timestamp(nanos_since_epoch)?;
+        self.data.write_one(seconds_since_base);
+        self.secondary.write_one(encoded_nanos);
+        Ok(())
+    }
+}
+
+impl<T: ArrowTimestampType> EstimateMemory for TimestampColumnEncoder<T> {
+    fn estimate_memory_size(&self) -> usize {
+        self.data.estimate_memory_size()
+            + self.secondary.estimate_memory_size()
+            + self
+                .present
+                .as_ref()
+                .map(|p| p.estimate_memory_size())
+                .unwrap_or(0)
+    }
+}
+
+impl<T: ArrowTimestampType> ColumnStripeEncoder for TimestampColumnEncoder<T> {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_primitive::<T>();
+        match (array.nulls(), &mut self.present) {
+            (Some(null_buffer), Some(present)) => {
+                present.extend(null_buffer);
+                for index in null_buffer.valid_indices() {
+                    self.write_value(array.value(index))?;
+                }
+            }
+            (Some(null_buffer), None) => {
+                let mut present = BooleanEncoder::new();
+                present.extend_present(self.encoded_count);
+                present.extend(null_buffer);
+                self.present = Some(present);
+                for index in null_buffer.valid_indices() {
+                    self.write_value(array.value(index))?;
+                }
+            }
+            (None, _) => {
+                for value in array.values() {
+                    self.write_value(*value)?;
+                }
+                if let Some(present) = self.present.as_mut() {
+                    present.extend_present(array.len())
+                }
+            }
+        }
+        self.encoded_count += array.len() - array.null_count();
+        Ok(())
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::DirectV2
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        let data = Stream {
+            kind: StreamType::Data,
+            bytes: self.data.take_inner(),
+        };
+        let secondary = Stream {
+            kind: StreamType::Secondary,
+            bytes: self.secondary.take_inner(),
+        };
+        self.encoded_count = 0;
+        match &mut self.present {
+            Some(present) => {
+                let present = Stream {
+                    kind: StreamType::Present,
+                    bytes: present.finish(),
+                };
+                vec![data, secondary, present]
+            }
+            None => vec![data, secondary],
+        }
+    }
+}
+
+const ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH: i128 = 1_420_070_400;
+const NANOSECONDS_IN_SECOND: i128 = 1_000_000_000;
+
+fn timestamp_value_to_nanos<T: ArrowTimestampType>(value: i64) -> i128 {
+    match T::UNIT {
+        TimeUnit::Second => (value as i128) * 1_000_000_000,
+        TimeUnit::Millisecond => (value as i128) * 1_000_000,
+        TimeUnit::Microsecond => (value as i128) * 1_000,
+        TimeUnit::Nanosecond => value as i128,
+    }
+}
+
+fn encode_timestamp(nanos_since_epoch: i128) -> Result<(i64, i64)> {
+    let seconds_since_epoch = nanos_since_epoch.div_euclid(NANOSECONDS_IN_SECOND);
+    let nanos = nanos_since_epoch.rem_euclid(NANOSECONDS_IN_SECOND) as u32;
+    let seconds_since_base = seconds_since_epoch - ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH;
+    ensure!(
+        seconds_since_base >= i64::MIN as i128 && seconds_since_base <= i64::MAX as i128,
+        UnexpectedSnafu {
+            msg: "timestamp seconds are out of ORC writer range"
+        }
+    );
+    Ok((seconds_since_base as i64, encode_timestamp_nanos(nanos)))
+}
+
+fn encode_timestamp_nanos(nanos: u32) -> i64 {
+    if nanos == 0 {
+        return 0;
+    }
+
+    let mut stripped = nanos;
+    let mut zeros = 0;
+    while zeros < 8 && stripped % 10 == 0 {
+        stripped /= 10;
+        zeros += 1;
+    }
+
+    if zeros > 1 {
+        ((stripped as i64) << 3) | ((zeros - 1) as i64)
+    } else {
+        (nanos as i64) << 3
+    }
+}
+
 pub type FloatColumnEncoder = PrimitiveColumnEncoder<Float32Type, FloatEncoder<f32>>;
 pub type DoubleColumnEncoder = PrimitiveColumnEncoder<Float64Type, FloatEncoder<f64>>;
 pub type ByteColumnEncoder = PrimitiveColumnEncoder<Int8Type, ByteRleEncoder>;
 pub type Int16ColumnEncoder = PrimitiveColumnEncoder<Int16Type, RleV2Encoder<i16, SignedEncoding>>;
 pub type Int32ColumnEncoder = PrimitiveColumnEncoder<Int32Type, RleV2Encoder<i32, SignedEncoding>>;
 pub type Int64ColumnEncoder = PrimitiveColumnEncoder<Int64Type, RleV2Encoder<i64, SignedEncoding>>;
+pub type DateColumnEncoder = PrimitiveColumnEncoder<Date32Type, RleV2Encoder<i32, SignedEncoding>>;
+pub type TimestampSecondColumnEncoder = TimestampColumnEncoder<TimestampSecondType>;
+pub type TimestampMillisecondColumnEncoder = TimestampColumnEncoder<TimestampMillisecondType>;
+pub type TimestampMicrosecondColumnEncoder = TimestampColumnEncoder<TimestampMicrosecondType>;
+pub type TimestampNanosecondColumnEncoder = TimestampColumnEncoder<TimestampNanosecondType>;
 pub type StringColumnEncoder = GenericBinaryColumnEncoder<GenericStringType<i32>>;
 pub type LargeStringColumnEncoder = GenericBinaryColumnEncoder<GenericStringType<i64>>;
 pub type BinaryColumnEncoder = GenericBinaryColumnEncoder<GenericBinaryType<i32>>;

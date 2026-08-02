@@ -51,6 +51,8 @@ pub mod arrow_reader;
 pub mod arrow_writer;
 #[cfg(feature = "async")]
 pub mod async_arrow_reader;
+#[cfg(feature = "async")]
+pub mod async_arrow_writer;
 pub mod bloom_filter;
 mod column;
 pub mod compression;
@@ -75,6 +77,8 @@ pub use arrow_reader::{ArrowReader, ArrowReaderBuilder};
 pub use arrow_writer::{ArrowWriter, ArrowWriterBuilder};
 #[cfg(feature = "async")]
 pub use async_arrow_reader::ArrowStreamReader;
+#[cfg(feature = "async")]
+pub use async_arrow_writer::{AsyncArrowWriter, AsyncArrowWriterBuilder};
 pub use predicate::{ComparisonOp, Predicate, PredicateValue};
 pub use row_selection::{RowSelection, RowSelector};
 pub use schema::{ArrowSchemaOptions, TimestampPrecision};

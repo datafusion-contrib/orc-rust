@@ -16,9 +16,9 @@
 // under the License.
 
 // Modified from https://github.com/DataEngineeringLabs/orc-format/blob/416490db0214fc51d53289253c0ee91f7fc9bc17/src/read/decompress/mod.rs
-//! Related code for handling decompression of ORC files.
+//! Related code for handling compression and decompression of ORC files.
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 use bytes::{Bytes, BytesMut};
 use fallible_streaming_iterator::FallibleStreamingIterator;
@@ -28,7 +28,8 @@ use crate::error::{self, OrcError, Result};
 use crate::proto::{self, CompressionKind};
 
 // Spec states default is 256K
-const DEFAULT_COMPRESSION_BLOCK_SIZE: u64 = 256 * 1024;
+pub(crate) const DEFAULT_COMPRESSION_BLOCK_SIZE: u64 = 256 * 1024;
+const MAX_COMPRESSION_BLOCK_SIZE: usize = (1 << 23) - 1;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Compression {
@@ -100,6 +101,32 @@ impl std::fmt::Display for CompressionType {
     }
 }
 
+/// Compression codec used by the ORC writer.
+///
+/// ORC's protobuf format does not define a separate `GZIP` compression kind.
+/// Ecosystems that expose a "gzip" writer option typically store it as ORC
+/// `ZLIB`, so [`WriterCompression::Zlib`] is also used by
+/// [`ArrowWriterBuilder::with_gzip_compression`](crate::ArrowWriterBuilder::with_gzip_compression).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WriterCompression {
+    #[default]
+    None,
+    Zlib,
+}
+
+impl WriterCompression {
+    pub(crate) fn to_proto(self) -> CompressionKind {
+        match self {
+            Self::None => CompressionKind::None,
+            Self::Zlib => CompressionKind::Zlib,
+        }
+    }
+
+    pub(crate) fn is_none(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
 /// Indicates length of block and whether it's compressed or not.
 #[derive(Debug, PartialEq, Eq)]
 enum CompressionHeader {
@@ -141,6 +168,17 @@ struct Lz4 {
 
 impl DecompressorVariant for Zlib {
     fn decompress_block(&self, compressed_bytes: &[u8], scratch: &mut Vec<u8>) -> Result<()> {
+        if let Ok(decoded) = read_zlib_wrapped(compressed_bytes) {
+            scratch.clear();
+            scratch.extend(decoded);
+            return Ok(());
+        }
+        if let Ok(decoded) = read_gzip_wrapped(compressed_bytes) {
+            scratch.clear();
+            scratch.extend(decoded);
+            return Ok(());
+        }
+
         let mut gz = flate2::read::DeflateDecoder::new(compressed_bytes);
         scratch.clear();
         gz.read_to_end(scratch).context(error::IoSnafu)?;
@@ -210,6 +248,70 @@ fn get_decompressor_variant(
         }),
         CompressionType::Zstd => Box::new(Zstd),
     }
+}
+
+fn read_zlib_wrapped(compressed_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut decoder = flate2::read::ZlibDecoder::new(compressed_bytes);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
+    Ok(decoded)
+}
+
+fn read_gzip_wrapped(compressed_bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut decoder = flate2::read::GzDecoder::new(compressed_bytes);
+    let mut decoded = Vec::new();
+    decoder.read_to_end(&mut decoded)?;
+    Ok(decoded)
+}
+
+pub(crate) fn compress_stream(
+    bytes: Bytes,
+    compression: WriterCompression,
+    block_size: usize,
+) -> Result<Bytes> {
+    if compression.is_none() || bytes.is_empty() {
+        return Ok(bytes);
+    }
+
+    if block_size == 0 || block_size > MAX_COMPRESSION_BLOCK_SIZE {
+        return error::UnexpectedSnafu {
+            msg: format!(
+                "compression block size must be between 1 and {MAX_COMPRESSION_BLOCK_SIZE}, got {block_size}"
+            ),
+        }
+        .fail();
+    }
+
+    let mut output = BytesMut::new();
+    for chunk in bytes.chunks(block_size) {
+        let compressed = match compression {
+            WriterCompression::None => unreachable!("None handled above"),
+            WriterCompression::Zlib => zlib_compress(chunk)?,
+        };
+
+        if compressed.len() >= chunk.len() {
+            output.extend_from_slice(&encode_header(chunk.len(), true));
+            output.extend_from_slice(chunk);
+        } else {
+            output.extend_from_slice(&encode_header(compressed.len(), false));
+            output.extend_from_slice(&compressed);
+        }
+    }
+
+    Ok(output.freeze())
+}
+
+fn zlib_compress(bytes: &[u8]) -> Result<Vec<u8>> {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).context(error::IoSnafu)?;
+    encoder.finish().context(error::IoSnafu)
+}
+
+fn encode_header(length: usize, is_original: bool) -> [u8; 3] {
+    debug_assert!(length <= MAX_COMPRESSION_BLOCK_SIZE);
+    let length_and_flag = ((length as u32) << 1) | u32::from(is_original);
+    let bytes = length_and_flag.to_le_bytes();
+    [bytes[0], bytes[1], bytes[2]]
 }
 
 enum State {
@@ -349,6 +451,7 @@ impl std::io::Read for Decompressor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
 
     #[test]
     fn decode_uncompressed() {
@@ -367,5 +470,48 @@ mod tests {
         let expected = CompressionHeader::Compressed(100_000);
         let actual = decode_header(bytes);
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn zlib_decompressor_accepts_zlib_gzip_and_raw_deflate_wrappers() {
+        let input = b"orc zlib compatibility";
+
+        let mut zlib_encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        zlib_encoder.write_all(input).unwrap();
+        let zlib = zlib_encoder.finish().unwrap();
+
+        let mut gzip_encoder =
+            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip_encoder.write_all(input).unwrap();
+        let gzip = gzip_encoder.finish().unwrap();
+
+        let mut deflate_encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        deflate_encoder.write_all(input).unwrap();
+        let deflate = deflate_encoder.finish().unwrap();
+
+        for compressed in [zlib, gzip, deflate] {
+            let mut scratch = Vec::new();
+            Zlib.decompress_block(&compressed, &mut scratch).unwrap();
+            assert_eq!(input, scratch.as_slice());
+        }
+    }
+
+    #[test]
+    fn zlib_compress_stream_roundtrips() {
+        let input = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+        let compressed = compress_stream(input.clone(), WriterCompression::Zlib, 8).unwrap();
+        assert_ne!(input, compressed);
+
+        let compression = Compression {
+            compression_type: CompressionType::Zlib,
+            max_decompressed_block_size: 8,
+        };
+        let mut decompressor = Decompressor::new(compressed, Some(compression), vec![]);
+        let mut output = Vec::new();
+        decompressor.read_to_end(&mut output).unwrap();
+
+        assert_eq!(input.as_ref(), output.as_slice());
     }
 }

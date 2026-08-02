@@ -22,10 +22,13 @@ use bytes::Bytes;
 use crate::proto;
 
 pub mod column;
+pub(crate) mod index;
 pub mod stripe;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum StreamType {
+    RowIndex,
+    BloomFilterUtf8,
     Present,
     Data,
     Length,
@@ -36,6 +39,8 @@ pub enum StreamType {
 impl From<StreamType> for proto::stream::Kind {
     fn from(value: StreamType) -> Self {
         match value {
+            StreamType::RowIndex => proto::stream::Kind::RowIndex,
+            StreamType::BloomFilterUtf8 => proto::stream::Kind::BloomFilterUtf8,
             StreamType::Present => proto::stream::Kind::Present,
             StreamType::Data => proto::stream::Kind::Data,
             StreamType::Length => proto::stream::Kind::Length,
