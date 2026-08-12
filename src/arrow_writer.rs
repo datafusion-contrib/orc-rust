@@ -28,21 +28,65 @@ use crate::{
     error::{IoSnafu, Result, UnexpectedSnafu},
     memory::EstimateMemory,
     proto,
-    writer::stripe::{StripeInformation, StripeWriter},
+    writer::compression::compress_stream,
+    writer::stripe::{StripeCompression, StripeInformation, StripeWriter},
 };
+
+// Re-export the writer-side compression API at the same level as
+// `ArrowWriterBuilder` so users can reach for both via a single
+// `use orc_rust::arrow_writer::*;`. The constants are exposed so
+// callers can derive their own defaults from the canonical values.
+pub use crate::writer::compression::{
+    Compression, DEFAULT_COMPRESSION_BLOCK_SIZE, DEFAULT_ZLIB_LEVEL, DEFAULT_ZSTD_LEVEL,
+};
+
+/// Maximum compression block size representable in the ORC chunk
+/// header's 23-bit length field. The header encodes payload length in
+/// the upper 23 bits, so the largest legal block size is
+/// `2^23 − 1 = 8 388 607` bytes.
+const MAX_COMPRESSION_BLOCK_SIZE: usize = (1 << 23) - 1;
 
 /// Construct an [`ArrowWriter`] to encode [`RecordBatch`]es into a single
 /// ORC file.
+///
+/// # Compression
+///
+/// By default, output is uncompressed and byte-identical to a build of
+/// orc-rust without writer-side compression. Pass [`Compression::Snappy`],
+/// [`Compression::zlib`], or [`Compression::zstd`] (or the level-bearing
+/// variants) to [`Self::with_compression`] to wrap every emitted stream
+/// in the ORC v1 spec's per-chunk compression frames. The default
+/// per-chunk block size is 256 KiB, configurable via
+/// [`Self::with_compression_block_size`].
+///
+/// ```no_run
+/// # use std::fs::File;
+/// # use arrow::array::RecordBatch;
+/// # use orc_rust::arrow_writer::{ArrowWriterBuilder, Compression};
+/// # fn batch() -> RecordBatch { unimplemented!() }
+/// let file = File::create("/tmp/out.orc").unwrap();
+/// let batch = batch();
+/// let mut writer = ArrowWriterBuilder::new(file, batch.schema())
+///     .with_compression(Compression::Snappy)
+///     .try_build()
+///     .unwrap();
+/// writer.write(&batch).unwrap();
+/// writer.close().unwrap();
+/// ```
 pub struct ArrowWriterBuilder<W> {
     writer: W,
     schema: SchemaRef,
     batch_size: usize,
     stripe_byte_size: usize,
+    compression: Compression,
+    compression_block_size: usize,
 }
 
 impl<W: Write> ArrowWriterBuilder<W> {
     /// Create a new [`ArrowWriterBuilder`], which will write an ORC file to
-    /// the provided writer, with the expected Arrow schema.
+    /// the provided writer, with the expected Arrow schema. Defaults to
+    /// uncompressed output; use [`Self::with_compression`] to opt in to
+    /// SNAPPY / ZLIB / ZSTD.
     pub fn new(writer: W, schema: SchemaRef) -> Self {
         Self {
             writer,
@@ -50,6 +94,8 @@ impl<W: Write> ArrowWriterBuilder<W> {
             batch_size: 1024,
             // 64 MiB
             stripe_byte_size: 64 * 1024 * 1024,
+            compression: Compression::None,
+            compression_block_size: DEFAULT_COMPRESSION_BLOCK_SIZE,
         }
     }
 
@@ -66,12 +112,44 @@ impl<W: Write> ArrowWriterBuilder<W> {
         self
     }
 
+    /// Select the compression codec applied to every emitted stream,
+    /// the stripe footers, and the file footer. Default is
+    /// [`Compression::None`].
+    ///
+    /// The codec choice is recorded in the file's PostScript so any
+    /// conformant ORC reader (Java ORC, DuckDB, Spark, orc-rust's own
+    /// reader) can decompress the file.
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    /// Per-chunk compression block size in bytes. Default 256 KiB,
+    /// matching the ORC spec and Java ORC's `OrcConf.BUFFER_SIZE`
+    /// default. The value is recorded in the PostScript so the reader
+    /// uses the same block size.
+    ///
+    /// The value is silently clamped to the spec's 23-bit limit
+    /// (`2^23 - 1` bytes); zero is treated as "use default".
+    pub fn with_compression_block_size(mut self, block_size: usize) -> Self {
+        self.compression_block_size = if block_size == 0 {
+            DEFAULT_COMPRESSION_BLOCK_SIZE
+        } else {
+            block_size.min(MAX_COMPRESSION_BLOCK_SIZE)
+        };
+        self
+    }
+
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
         // Required magic "ORC" bytes at start of file
         self.writer.write_all(b"ORC").context(IoSnafu)?;
-        let writer = StripeWriter::new(self.writer, &self.schema);
+        let stripe_compression = self.compression.is_active().then_some(StripeCompression {
+            compression: self.compression,
+            block_size: self.compression_block_size,
+        });
+        let writer = StripeWriter::with_compression(self.writer, &self.schema, stripe_compression);
         Ok(ArrowWriter {
             writer,
             schema: self.schema,
@@ -80,6 +158,8 @@ impl<W: Write> ArrowWriterBuilder<W> {
             written_stripes: vec![],
             // Accounting for the 3 magic bytes above
             total_bytes_written: 3,
+            compression: self.compression,
+            compression_block_size: self.compression_block_size,
         })
     }
 }
@@ -95,6 +175,13 @@ pub struct ArrowWriter<W> {
     written_stripes: Vec<StripeInformation>,
     /// Used to keep track of progress in file so far (instead of needing Seek on the writer)
     total_bytes_written: u64,
+    /// Compression codec configured on this writer. Echoed into the
+    /// file footer's PostScript so the reader runs the matching
+    /// decompressor.
+    compression: Compression,
+    /// Per-chunk compression block size in bytes — also recorded in the
+    /// PostScript per the ORC spec.
+    compression_block_size: usize,
 }
 
 impl<W: Write> ArrowWriter<W> {
@@ -140,17 +227,30 @@ impl<W: Write> ArrowWriter<W> {
         }
         let footer = serialize_footer(&self.written_stripes, &self.schema);
         let footer = footer.encode_to_vec();
-        let postscript = serialize_postscript(footer.len() as u64);
+        // Per the ORC spec the file footer is also compressed when a
+        // codec is configured. The PostScript itself is *not*
+        // compressed (it's written in fixed format at the end of the
+        // file so readers can locate it without first knowing the
+        // codec).
+        let footer_bytes = if self.compression.is_active() {
+            compress_stream(self.compression, self.compression_block_size, &footer)?
+        } else {
+            footer
+        };
+        let postscript = serialize_postscript(
+            footer_bytes.len() as u64,
+            self.compression,
+            self.compression_block_size,
+        );
         let postscript = postscript.encode_to_vec();
         let postscript_len = postscript.len() as u8;
 
         let mut writer = self.writer.finish();
-        writer.write_all(&footer).context(IoSnafu)?;
+        writer.write_all(&footer_bytes).context(IoSnafu)?;
         writer.write_all(&postscript).context(IoSnafu)?;
         // Postscript length as last byte
         writer.write_all(&[postscript_len]).context(IoSnafu)?;
 
-        // TODO: return file metadata
         Ok(())
     }
 }
@@ -245,11 +345,27 @@ fn serialize_footer(stripes: &[StripeInformation], schema: &SchemaRef) -> proto:
     }
 }
 
-fn serialize_postscript(footer_length: u64) -> proto::PostScript {
+fn serialize_postscript(
+    footer_length: u64,
+    compression: Compression,
+    compression_block_size: usize,
+) -> proto::PostScript {
+    let kind = compression.kind();
+    // The ORC spec says `compressionBlockSize` is "the block size used
+    // for compression" and is recorded only when the codec is not
+    // NONE. The Java reader tolerates the field being present with
+    // any value when CompressionKind is NONE, but matching Java's
+    // writer (which omits it when uncompressed) keeps byte-for-byte
+    // backward compatibility with pre-compression-feature output.
+    let compression_block_size = if compression.is_active() {
+        Some(compression_block_size as u64)
+    } else {
+        None
+    };
     proto::PostScript {
         footer_length: Some(footer_length),
-        compression: Some(proto::CompressionKind::None.into()), // TODO: support compression
-        compression_block_size: None,
+        compression: Some(kind.into()),
+        compression_block_size,
         version: vec![0, 12],
         metadata_length: Some(0),       // TODO: statistics
         writer_version: Some(u32::MAX), // TODO: check which version to use
