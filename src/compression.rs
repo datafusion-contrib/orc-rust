@@ -422,8 +422,10 @@ struct ZstdCompressor(zstd::bulk::Compressor<'static>);
 
 impl CompressorVariant for ZstdCompressor {
     fn compress_block(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<()> {
-        let compressed = self.0.compress(input).context(error::IoSnafu)?;
-        output.extend_from_slice(&compressed);
+        output.reserve(zstd::zstd_safe::compress_bound(input.len()));
+        self.0
+            .compress_to_buffer(input, output)
+            .context(error::IoSnafu)?;
         Ok(())
     }
 }
