@@ -6,18 +6,21 @@
 # orc-rust
 
 A native Rust implementation of the [Apache ORC](https://orc.apache.org) file format,
-providing API's to read data into [Apache Arrow](https://arrow.apache.org) in-memory arrays.
+providing APIs to read data into [Apache Arrow](https://arrow.apache.org) in-memory arrays
+(with limited support for writing Arrow arrays to ORC files).
 
 See the [documentation](https://docs.rs/orc-rust/latest/orc_rust/) for examples on how to use this crate.
 
 ## Supported features
 
-This crate currently only supports reading ORC files into Arrow arrays. Write support is planned
-(see [Roadmap](#roadmap)). The below features listed relate only to reading ORC files.
+This crate supports reading ORC files into Arrow arrays and provides initial support for writing
+Arrow arrays to ORC files.
+The features below relate to reading unless otherwise stated.
 At this time, we aim to support the [ORCv1](https://orc.apache.org/specification/ORCv1/) specification only.
 
 - Read synchronously & asynchronously (using Tokio)
-- All compression types (Zlib, Snappy, Lzo, Lz4, Zstd)
+- Reader compression types (Zlib, Snappy, LZO, LZ4, Zstd)
+- Writer compression types (Zlib, Snappy, LZ4, Zstd)
 - All ORC data types
 - All encodings
 - Rudimentary support for retrieving statistics
@@ -34,7 +37,6 @@ The following lists the rough roadmap for features to be implemented, from highe
 - Predicate pushdown
 - Row indices
 - Bloom filters
-- Write from Arrow arrays
 - Encryption
 
 A non-Arrow API interface is not planned at the moment. Feel free to raise an issue if there is such
