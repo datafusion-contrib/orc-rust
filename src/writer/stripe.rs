@@ -29,8 +29,9 @@ use crate::proto;
 
 use super::column::{
     BinaryColumnEncoder, BooleanColumnEncoder, ByteColumnEncoder, ColumnStripeEncoder,
-    DoubleColumnEncoder, FloatColumnEncoder, Int16ColumnEncoder, Int32ColumnEncoder,
-    Int64ColumnEncoder, LargeBinaryColumnEncoder, LargeStringColumnEncoder, StringColumnEncoder,
+    DateColumnEncoder, DoubleColumnEncoder, FloatColumnEncoder, Int16ColumnEncoder,
+    Int32ColumnEncoder, Int64ColumnEncoder, LargeBinaryColumnEncoder, LargeStringColumnEncoder,
+    StringColumnEncoder,
 };
 use super::{ColumnEncoding, StreamType};
 
@@ -183,6 +184,7 @@ fn create_encoder(field: &FieldRef) -> Box<dyn ColumnStripeEncoder> {
         ArrowDataType::Int16 => Box::new(Int16ColumnEncoder::new(ColumnEncoding::DirectV2)),
         ArrowDataType::Int32 => Box::new(Int32ColumnEncoder::new(ColumnEncoding::DirectV2)),
         ArrowDataType::Int64 => Box::new(Int64ColumnEncoder::new(ColumnEncoding::DirectV2)),
+        ArrowDataType::Date32 => Box::new(DateColumnEncoder::new(ColumnEncoding::DirectV2)),
         ArrowDataType::Utf8 => Box::new(StringColumnEncoder::new()),
         ArrowDataType::LargeUtf8 => Box::new(LargeStringColumnEncoder::new()),
         ArrowDataType::Binary => Box::new(BinaryColumnEncoder::new()),

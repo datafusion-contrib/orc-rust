@@ -229,6 +229,10 @@ fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
                 kind: Some(proto::r#type::Kind::Long.into()),
                 ..Default::default()
             },
+            ArrowDataType::Date32 => proto::Type {
+                kind: Some(proto::r#type::Kind::Date.into()),
+                ..Default::default()
+            },
             ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => proto::Type {
                 kind: Some(proto::r#type::Kind::String.into()),
                 ..Default::default()
@@ -302,9 +306,9 @@ mod tests {
 
     use arrow::{
         array::{
-            Array, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-            Int64Array, Int8Array, LargeBinaryArray, LargeStringArray, RecordBatchReader,
-            StringArray,
+            Array, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array, Int16Array,
+            Int32Array, Int64Array, Int8Array, LargeBinaryArray, LargeStringArray,
+            RecordBatchReader, StringArray,
         },
         buffer::NullBuffer,
         compute::concat_batches,
@@ -315,13 +319,14 @@ mod tests {
 
     use crate::{
         compression::{CompressionType, Decompressor},
+        schema::DataType as OrcDataType,
         stripe::Stripe,
         ArrowReaderBuilder,
     };
 
     use super::*;
 
-    fn roundtrip(batches: &[RecordBatch]) -> Vec<RecordBatch> {
+    fn encode(batches: &[RecordBatch]) -> Bytes {
         let mut f = vec![];
         let mut writer = ArrowWriterBuilder::new(&mut f, batches[0].schema())
             .try_build()
@@ -331,7 +336,11 @@ mod tests {
         }
         writer.close().unwrap();
 
-        let f = Bytes::from(f);
+        Bytes::from(f)
+    }
+
+    fn roundtrip(batches: &[RecordBatch]) -> Vec<RecordBatch> {
+        let f = encode(batches);
         let reader = ArrowReaderBuilder::try_new(f).unwrap().build();
         reader.collect::<Result<Vec<_>, _>>().unwrap()
     }
@@ -452,6 +461,55 @@ mod tests {
         ]);
         let batch = RecordBatch::try_new(Arc::new(schema), vec![utf8_array, binary_array]).unwrap();
         assert_eq!(batch, rows[0]);
+    }
+
+    #[test]
+    fn test_roundtrip_write_date32() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "date",
+            ArrowDataType::Date32,
+            true,
+        )]));
+
+        let batch_without_nulls = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Date32Array::from(vec![-1, 0, 1, 11_016]))],
+        )
+        .unwrap();
+        let batch_with_nulls = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Date32Array::from(vec![
+                Some(18_321),
+                None,
+                Some(19_782),
+            ]))],
+        )
+        .unwrap();
+
+        let file = encode(&[batch_without_nulls, batch_with_nulls]);
+        let builder = ArrowReaderBuilder::try_new(file).unwrap();
+        assert!(matches!(
+            builder.file_metadata().root_data_type().children()[0].data_type(),
+            OrcDataType::Date { .. }
+        ));
+
+        let rows = builder.build().collect::<Result<Vec<_>, _>>().unwrap();
+        let actual = concat_batches(&schema, rows.iter()).unwrap();
+        let expected = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Date32Array::from(vec![
+                Some(-1),
+                Some(0),
+                Some(1),
+                Some(11_016),
+                Some(18_321),
+                None,
+                Some(19_782),
+            ]))],
+        )
+        .unwrap();
+
+        assert_eq!(expected, actual);
     }
 
     #[test]

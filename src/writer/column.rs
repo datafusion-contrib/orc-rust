@@ -20,7 +20,7 @@ use std::marker::PhantomData;
 use arrow::{
     array::{Array, ArrayRef, AsArray},
     datatypes::{
-        ArrowPrimitiveType, ByteArrayType, Float32Type, Float64Type, GenericBinaryType,
+        ArrowPrimitiveType, ByteArrayType, Date32Type, Float32Type, Float64Type, GenericBinaryType,
         GenericStringType, Int16Type, Int32Type, Int64Type, Int8Type,
     },
 };
@@ -396,6 +396,7 @@ pub type ByteColumnEncoder = PrimitiveColumnEncoder<Int8Type, ByteRleEncoder>;
 pub type Int16ColumnEncoder = PrimitiveColumnEncoder<Int16Type, RleV2Encoder<i16, SignedEncoding>>;
 pub type Int32ColumnEncoder = PrimitiveColumnEncoder<Int32Type, RleV2Encoder<i32, SignedEncoding>>;
 pub type Int64ColumnEncoder = PrimitiveColumnEncoder<Int64Type, RleV2Encoder<i64, SignedEncoding>>;
+pub type DateColumnEncoder = PrimitiveColumnEncoder<Date32Type, RleV2Encoder<i32, SignedEncoding>>;
 pub type StringColumnEncoder = GenericBinaryColumnEncoder<GenericStringType<i32>>;
 pub type LargeStringColumnEncoder = GenericBinaryColumnEncoder<GenericStringType<i64>>;
 pub type BinaryColumnEncoder = GenericBinaryColumnEncoder<GenericBinaryType<i32>>;
