@@ -18,7 +18,10 @@
 use std::io::Write;
 
 use arrow::array::RecordBatch;
-use arrow::datatypes::{DataType as ArrowDataType, FieldRef, SchemaRef};
+use arrow::datatypes::{
+    DataType as ArrowDataType, FieldRef, SchemaRef, TimeUnit, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
+};
 use prost::Message;
 use snafu::ResultExt;
 
@@ -31,7 +34,7 @@ use super::column::{
     BinaryColumnEncoder, BooleanColumnEncoder, ByteColumnEncoder, ColumnStripeEncoder,
     DateColumnEncoder, DoubleColumnEncoder, FloatColumnEncoder, Int16ColumnEncoder,
     Int32ColumnEncoder, Int64ColumnEncoder, LargeBinaryColumnEncoder, LargeStringColumnEncoder,
-    StringColumnEncoder,
+    StringColumnEncoder, TimestampColumnEncoder,
 };
 use super::{ColumnEncoding, StreamType};
 
@@ -72,6 +75,7 @@ pub struct StripeWriter<W> {
     columns: Vec<Box<dyn ColumnStripeEncoder>>,
     pub row_count: usize,
     compressor: Compressor,
+    timezone: Option<String>,
 }
 
 impl<W> EstimateMemory for StripeWriter<W> {
@@ -83,13 +87,19 @@ impl<W> EstimateMemory for StripeWriter<W> {
 }
 
 impl<W: Write> StripeWriter<W> {
-    pub fn new(writer: W, schema: &SchemaRef, compressor: Compressor) -> Self {
+    pub fn new(
+        writer: W,
+        schema: &SchemaRef,
+        compressor: Compressor,
+        timezone: Option<String>,
+    ) -> Self {
         let columns = schema.fields().iter().map(create_encoder).collect();
         Self {
             writer,
             columns,
             row_count: 0,
             compressor,
+            timezone,
         }
     }
 
@@ -148,7 +158,7 @@ impl<W: Write> StripeWriter<W> {
         let stripe_footer = proto::StripeFooter {
             streams,
             columns: column_encodings,
-            writer_timezone: None,
+            writer_timezone: self.timezone.clone(),
             encryption: vec![],
         };
 
@@ -185,6 +195,28 @@ fn create_encoder(field: &FieldRef) -> Box<dyn ColumnStripeEncoder> {
         ArrowDataType::Int32 => Box::new(Int32ColumnEncoder::new(ColumnEncoding::DirectV2)),
         ArrowDataType::Int64 => Box::new(Int64ColumnEncoder::new(ColumnEncoding::DirectV2)),
         ArrowDataType::Date32 => Box::new(DateColumnEncoder::new(ColumnEncoding::DirectV2)),
+        // TODO: Support non-UTC Arrow timestamp timezones. ORC TIMESTAMP_INSTANT
+        // does not preserve the original Arrow timezone metadata.
+        ArrowDataType::Timestamp(TimeUnit::Second, timezone)
+            if matches!(timezone.as_deref(), None | Some("UTC")) =>
+        {
+            Box::new(TimestampColumnEncoder::<TimestampSecondType>::new())
+        }
+        ArrowDataType::Timestamp(TimeUnit::Millisecond, timezone)
+            if matches!(timezone.as_deref(), None | Some("UTC")) =>
+        {
+            Box::new(TimestampColumnEncoder::<TimestampMillisecondType>::new())
+        }
+        ArrowDataType::Timestamp(TimeUnit::Microsecond, timezone)
+            if matches!(timezone.as_deref(), None | Some("UTC")) =>
+        {
+            Box::new(TimestampColumnEncoder::<TimestampMicrosecondType>::new())
+        }
+        ArrowDataType::Timestamp(TimeUnit::Nanosecond, timezone)
+            if matches!(timezone.as_deref(), None | Some("UTC")) =>
+        {
+            Box::new(TimestampColumnEncoder::<TimestampNanosecondType>::new())
+        }
         ArrowDataType::Utf8 => Box::new(StringColumnEncoder::new()),
         ArrowDataType::LargeUtf8 => Box::new(LargeStringColumnEncoder::new()),
         ArrowDataType::Binary => Box::new(BinaryColumnEncoder::new()),

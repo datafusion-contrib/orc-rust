@@ -20,8 +20,9 @@ use std::marker::PhantomData;
 use arrow::{
     array::{Array, ArrayRef, AsArray},
     datatypes::{
-        ArrowPrimitiveType, ByteArrayType, Date32Type, Float32Type, Float64Type, GenericBinaryType,
-        GenericStringType, Int16Type, Int32Type, Int64Type, Int8Type,
+        ArrowPrimitiveType, ArrowTimestampType, ByteArrayType, Date32Type, Float32Type,
+        Float64Type, GenericBinaryType, GenericStringType, Int16Type, Int32Type, Int64Type,
+        Int8Type,
     },
 };
 use bytes::{BufMut, BytesMut};
@@ -32,6 +33,7 @@ use crate::{
         byte::ByteRleEncoder,
         float::FloatEncoder,
         integer::{rle_v2::RleV2Encoder, NInt, SignedEncoding, UnsignedEncoding},
+        timestamp::TimestampEncoder,
         PrimitiveValueEncoder,
     },
     error::Result,
@@ -161,6 +163,95 @@ impl<T: ArrowPrimitiveType, E: PrimitiveValueEncoder<T::Native>> ColumnStripeEnc
             }
             None => vec![data],
         }
+    }
+}
+
+/// Seconds from the ORC epoch of 1 January 2015 to the Unix epoch.
+const ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH: i64 = 1_420_070_400;
+
+/// Encodes an Arrow timestamp into the DATA and SECONDARY streams used by ORC.
+pub struct TimestampColumnEncoder<T: ArrowTimestampType> {
+    encoder: TimestampEncoder<T>,
+    present: Option<BooleanEncoder>,
+    encoded_count: usize,
+}
+
+impl<T: ArrowTimestampType> TimestampColumnEncoder<T> {
+    pub fn new() -> Self {
+        Self {
+            encoder: TimestampEncoder::new(
+                ORC_EPOCH_UTC_SECONDS_SINCE_UNIX_EPOCH,
+                Box::new(RleV2Encoder::<i64, SignedEncoding>::new()),
+                Box::new(RleV2Encoder::<i64, UnsignedEncoding>::new()),
+            ),
+            present: None,
+            encoded_count: 0,
+        }
+    }
+}
+
+impl<T: ArrowTimestampType> EstimateMemory for TimestampColumnEncoder<T> {
+    fn estimate_memory_size(&self) -> usize {
+        self.encoder.estimate_memory_size()
+            + self
+                .present
+                .as_ref()
+                .map(|present| present.estimate_memory_size())
+                .unwrap_or(0)
+    }
+}
+
+impl<T: ArrowTimestampType> ColumnStripeEncoder for TimestampColumnEncoder<T> {
+    fn encode_array(&mut self, array: &ArrayRef) -> Result<()> {
+        let array = array.as_primitive::<T>();
+        if let Some(null_buffer) = array.nulls() {
+            let values = null_buffer
+                .valid_indices()
+                .map(|index| array.value(index))
+                .collect::<Vec<_>>();
+            self.encoder.encode(&values)?;
+
+            let encoded_count = self.encoded_count;
+            let present = self.present.get_or_insert_with(|| {
+                let mut present = BooleanEncoder::new();
+                present.extend_present(encoded_count);
+                present
+            });
+            present.extend(null_buffer);
+        } else {
+            self.encoder.encode(array.values())?;
+            if let Some(present) = self.present.as_mut() {
+                present.extend_present(array.len());
+            }
+        }
+        self.encoded_count += array.len() - array.null_count();
+        Ok(())
+    }
+
+    fn column_encoding(&self) -> ColumnEncoding {
+        ColumnEncoding::DirectV2
+    }
+
+    fn finish(&mut self) -> Vec<Stream> {
+        let (data, secondary) = self.encoder.take_inner();
+        let mut streams = vec![
+            Stream {
+                kind: StreamType::Data,
+                bytes: data,
+            },
+            Stream {
+                kind: StreamType::Secondary,
+                bytes: secondary,
+            },
+        ];
+        self.encoded_count = 0;
+        if let Some(present) = self.present.as_mut() {
+            streams.push(Stream {
+                kind: StreamType::Present,
+                bytes: present.finish(),
+            });
+        }
+        streams
     }
 }
 

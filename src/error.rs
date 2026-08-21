@@ -71,6 +71,18 @@ pub enum OrcError {
     },
 
     #[snafu(display(
+        "Cannot encode timestamp value {} in {:?} as an ORC timestamp",
+        value,
+        time_unit,
+    ))]
+    EncodeTimestamp {
+        #[snafu(implicit)]
+        location: Location,
+        value: i64,
+        time_unit: TimeUnit,
+    },
+
+    #[snafu(display(
         "String/Binary data size ({} bytes) exceeds maximum offset size ({}) \
          with current batch size {}. Please reduce the batch size to avoid offset overflow.",
         total_length,

@@ -86,10 +86,16 @@ impl<W: Write> ArrowWriterBuilder<W> {
     /// Construct an [`ArrowWriter`] ready to encode [`RecordBatch`]es into
     /// an ORC file.
     pub fn try_build(mut self) -> Result<ArrowWriter<W>> {
+        let timezone = self
+            .schema
+            .fields()
+            .iter()
+            .any(|field| matches!(field.data_type(), ArrowDataType::Timestamp(_, None)))
+            .then(|| "UTC".to_owned());
         let compressor = Compressor::new(self.compression, self.compression_block_size)?;
         // Required magic "ORC" bytes at start of file
         self.writer.write_all(b"ORC").context(IoSnafu)?;
-        let writer = StripeWriter::new(self.writer, &self.schema, compressor);
+        let writer = StripeWriter::new(self.writer, &self.schema, compressor, timezone);
         Ok(ArrowWriter {
             writer,
             schema: self.schema,
@@ -233,6 +239,16 @@ fn serialize_schema(schema: &SchemaRef) -> Vec<proto::Type> {
                 kind: Some(proto::r#type::Kind::Date.into()),
                 ..Default::default()
             },
+            ArrowDataType::Timestamp(_, None) => proto::Type {
+                kind: Some(proto::r#type::Kind::Timestamp.into()),
+                ..Default::default()
+            },
+            ArrowDataType::Timestamp(_, Some(timezone)) if timezone.as_ref() == "UTC" => {
+                proto::Type {
+                    kind: Some(proto::r#type::Kind::TimestampInstant.into()),
+                    ..Default::default()
+                }
+            }
             ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => proto::Type {
                 kind: Some(proto::r#type::Kind::String.into()),
                 ..Default::default()
@@ -306,13 +322,14 @@ mod tests {
 
     use arrow::{
         array::{
-            Array, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array, Int16Array,
-            Int32Array, Int64Array, Int8Array, LargeBinaryArray, LargeStringArray,
-            RecordBatchReader, StringArray,
+            Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float32Array, Float64Array,
+            Int16Array, Int32Array, Int64Array, Int8Array, LargeBinaryArray, LargeStringArray,
+            RecordBatchReader, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+            TimestampNanosecondArray, TimestampSecondArray,
         },
         buffer::NullBuffer,
         compute::concat_batches,
-        datatypes::{DataType as ArrowDataType, Field, Schema},
+        datatypes::{DataType as ArrowDataType, Field, Schema, TimeUnit},
     };
     use bytes::Bytes;
     use prost::Message;
@@ -510,6 +527,147 @@ mod tests {
         .unwrap();
 
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_roundtrip_write_timestamps() {
+        let second = vec![Some(-2), Some(-1), Some(0), None, Some(1), Some(2)];
+        let millisecond = vec![
+            Some(-1_001),
+            Some(-1_000),
+            Some(-1_999),
+            None,
+            Some(1_001),
+            Some(1_234),
+        ];
+        let microsecond = vec![
+            Some(-1_001_001),
+            Some(-1_000_000),
+            Some(-999_999),
+            None,
+            Some(1_001_001),
+            Some(1_234_567),
+        ];
+        let nanosecond = vec![
+            Some(-1_001_001_001),
+            Some(-1_000_000_000),
+            Some(-999_999_999),
+            None,
+            Some(1_001_001_001),
+            Some(1_234_567_890),
+        ];
+
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(TimestampSecondArray::from(second.clone())),
+            Arc::new(TimestampMillisecondArray::from(millisecond.clone())),
+            Arc::new(TimestampMicrosecondArray::from(microsecond.clone())),
+            Arc::new(TimestampNanosecondArray::from(nanosecond.clone())),
+            Arc::new(TimestampSecondArray::from(second).with_timezone("UTC")),
+            Arc::new(TimestampMillisecondArray::from(millisecond).with_timezone("UTC")),
+            Arc::new(TimestampMicrosecondArray::from(microsecond).with_timezone("UTC")),
+            Arc::new(TimestampNanosecondArray::from(nanosecond).with_timezone("UTC")),
+        ];
+        let schema = Arc::new(Schema::new(
+            arrays
+                .iter()
+                .enumerate()
+                .map(|(index, array)| {
+                    Field::new(
+                        format!("timestamp_{index}"),
+                        array.data_type().clone(),
+                        true,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+
+        let mut file = Vec::new();
+        let mut writer = ArrowWriterBuilder::new(&mut file, schema.clone())
+            .try_build()
+            .unwrap();
+        writer.write(&batch.slice(0, 3)).unwrap();
+        writer.flush_stripe().unwrap();
+        writer.write(&batch.slice(3, 3)).unwrap();
+        writer.close().unwrap();
+
+        let file = Bytes::from(file);
+        let builder = ArrowReaderBuilder::try_new(file.clone()).unwrap();
+        let children = builder.file_metadata().root_data_type().children();
+        for child in &children[..4] {
+            assert!(matches!(child.data_type(), OrcDataType::Timestamp { .. }));
+        }
+        for child in &children[4..] {
+            assert!(matches!(
+                child.data_type(),
+                OrcDataType::TimestampWithLocalTimezone { .. }
+            ));
+        }
+
+        let stripes = builder.file_metadata().stripe_metadatas();
+        assert_eq!(stripes.len(), 2);
+        for stripe in stripes {
+            let footer_start = stripe.footer_offset() as usize;
+            let footer_end = footer_start + stripe.footer_length() as usize;
+            let mut decoded_footer = Vec::new();
+            Decompressor::new(
+                file.slice(footer_start..footer_end),
+                builder.file_metadata().compression(),
+                Vec::new(),
+            )
+            .read_to_end(&mut decoded_footer)
+            .unwrap();
+            let footer = proto::StripeFooter::decode(decoded_footer.as_slice()).unwrap();
+            assert_eq!(footer.writer_timezone.as_deref(), Some("UTC"));
+            assert_eq!(
+                footer
+                    .streams
+                    .iter()
+                    .filter(|stream| stream.kind() == proto::stream::Kind::Secondary)
+                    .count(),
+                8
+            );
+        }
+
+        let rows = builder
+            .with_schema(schema.clone())
+            .build()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let actual = concat_batches(&schema, rows.iter()).unwrap();
+        assert_eq!(batch, actual);
+    }
+
+    #[test]
+    fn test_write_timestamps_with_inconsistent_null_buffers() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            ArrowDataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        )]));
+
+        let without_nulls = Arc::new(TimestampNanosecondArray::from(vec![1, 2, 3]));
+        let with_nulls = Arc::new(TimestampNanosecondArray::from(vec![None, Some(4), None]));
+        assert!(without_nulls.nulls().is_none());
+        assert!(with_nulls.nulls().is_some());
+
+        let batch1 = RecordBatch::try_new(schema.clone(), vec![without_nulls]).unwrap();
+        let batch2 = RecordBatch::try_new(schema.clone(), vec![with_nulls]).unwrap();
+        let expected = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampNanosecondArray::from(vec![
+                Some(1),
+                Some(2),
+                Some(3),
+                None,
+                Some(4),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let rows = roundtrip(&[batch1, batch2]);
+        assert_eq!(expected, rows[0]);
     }
 
     #[test]
