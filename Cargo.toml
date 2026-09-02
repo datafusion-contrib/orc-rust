@@ -17,7 +17,7 @@
 
 [package]
 name = "orc-rust"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 homepage = "https://github.com/datafusion-contrib/orc-rust"
 repository = "https://github.com/datafusion-contrib/orc-rust"
@@ -32,7 +32,7 @@ rust-version = "1.73"
 all-features = true
 
 [dependencies]
-arrow = { version = "58.0", features = ["prettyprint", "chrono-tz", "ipc_compression"] }
+arrow = { version = "59.0", features = ["prettyprint", "chrono-tz", "ipc_compression"] }
 bytemuck = { version = "1.22.0", features = ["must_cast"] }
 bytes = "1.10.1"
 chrono = { version = "0.4.41", default-features = false, features = ["std"] }
