@@ -86,6 +86,10 @@ cli = ["anyhow", "clap", "serde", "serde_json"]
 # Enable opendal support.
 opendal = ["dep:opendal"]
 
+[[example]]
+name = "opendal"
+required-features = ["async", "opendal"]
+
 [[bench]]
 name = "arrow_reader"
 harness = false
