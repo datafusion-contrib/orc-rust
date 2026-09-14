@@ -11,6 +11,13 @@ providing APIs to read data into [Apache Arrow](https://arrow.apache.org) in-mem
 
 See the [documentation](https://docs.rs/orc-rust/latest/orc_rust/) for examples on how to use this crate.
 
+The [OpenDAL example](examples/opendal.rs) writes an ORC file to an in-memory service
+and reads it back asynchronously using `AsyncOpendalReader`:
+
+```shell
+cargo run --example opendal --features opendal
+```
+
 ## Supported features
 
 This crate supports reading ORC files into Arrow arrays and provides initial support for writing
